@@ -41,11 +41,13 @@ CONFIG_DIR = os.environ.get(
 )
 CONFIG_FILE = os.path.join(CONFIG_DIR, "config.json")
 PASSWORD_FILE = os.path.join(CONFIG_DIR, "fmg.passwd")
+API_KEY_FILE = os.path.join(CONFIG_DIR, "fmg.apikey")
 
 DEFAULT_CONFIG = {
     "host": "",
     "port": 443,
     "adom": "",
+    "auth_mode": "password",  # "password" (classic admin) or "apikey" (REST API Admin token)
     "user": "",
     "log_dir": DEFAULT_LOG_DIR,
     "log_retention_days": DEFAULT_LOG_RETENTION_DAYS,
@@ -120,6 +122,20 @@ def save_password(password):
         fh.write(password)
 
 
+def load_api_key():
+    if os.path.exists(API_KEY_FILE):
+        with open(API_KEY_FILE, "r", encoding="utf-8") as fh:
+            return fh.read().strip() or None
+    return None
+
+
+def save_api_key(api_key):
+    os.makedirs(CONFIG_DIR, exist_ok=True, mode=0o700)
+    fd = os.open(API_KEY_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(api_key)
+
+
 # ---- auth ---------------------------------------------------------------
 
 @app.before_request
@@ -153,7 +169,7 @@ def _open_run_log(cfg):
         return None, None
 
 
-def _run_worker(cfg, password, trigger, dry_run):
+def _run_worker(cfg, password, api_key, trigger, dry_run):
     log_path, log_fh = _open_run_log(cfg)
 
     def _log(message):
@@ -213,8 +229,9 @@ def _run_worker(cfg, password, trigger, dry_run):
         rows, exit_code = run_scan(
             host=cfg["host"],
             port=cfg["port"],
-            user=cfg["user"],
+            user=cfg["user"] or None,
             password=password,
+            api_key=api_key,
             adom=cfg["adom"],
             all_devices=cfg["all_devices"],
             dry_run=dry_run,
@@ -256,18 +273,30 @@ def _run_worker(cfg, password, trigger, dry_run):
 
 def try_start_run(trigger, dry_run=False):
     cfg = load_config()
-    if not cfg.get("host") or not cfg.get("adom") or not cfg.get("user"):
-        return False, "Configuration incomplète (host / ADOM / utilisateur)."
-    password = load_password()
-    if not password:
-        return False, "Mot de passe FortiManager non configuré."
+    if not cfg.get("host") or not cfg.get("adom"):
+        return False, "Configuration incomplète (host / ADOM)."
+
+    password = None
+    api_key = None
+    if cfg.get("auth_mode") == "apikey":
+        api_key = load_api_key()
+        if not api_key:
+            return False, "Clé API FortiManager non configurée."
+    else:
+        if not cfg.get("user"):
+            return False, "Configuration incomplète (utilisateur API)."
+        password = load_password()
+        if not password:
+            return False, "Mot de passe FortiManager non configuré."
 
     with lock:
         if state["phase"] == "running":
             return False, "Un scan est déjà en cours."
         state["phase"] = "running"
 
-    threading.Thread(target=_run_worker, args=(cfg, password, trigger, dry_run), daemon=True).start()
+    threading.Thread(
+        target=_run_worker, args=(cfg, password, api_key, trigger, dry_run), daemon=True
+    ).start()
     return True, None
 
 
@@ -302,6 +331,7 @@ def index():
         "index.html",
         cfg=cfg,
         has_password=load_password() is not None,
+        has_api_key=load_api_key() is not None,
         report_columns=REPORT_COLUMNS,
         error=request.args.get("error"),
     )
@@ -313,6 +343,7 @@ def save_config_route():
     cfg["host"] = request.form.get("host", "").strip()
     cfg["port"] = int(request.form.get("port") or 443)
     cfg["adom"] = request.form.get("adom", "").strip()
+    cfg["auth_mode"] = "apikey" if request.form.get("auth_mode") == "apikey" else "password"
     cfg["user"] = request.form.get("user", "").strip()
     cfg["log_dir"] = request.form.get("log_dir", "").strip()
     cfg["log_retention_days"] = max(
@@ -330,6 +361,10 @@ def save_config_route():
     new_password = request.form.get("password", "")
     if new_password:
         save_password(new_password)
+
+    new_api_key = request.form.get("api_key", "")
+    if new_api_key:
+        save_api_key(new_api_key)
 
     with lock:
         state["next_run_at"] = None  # reschedule cleanly from now

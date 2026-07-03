@@ -59,10 +59,11 @@ class FmgApiError(Exception):
 
 
 class FmgClient:
-    def __init__(self, host, verify_ssl=True, timeout=DEFAULT_TIMEOUT, port=443):
+    def __init__(self, host, verify_ssl=True, timeout=DEFAULT_TIMEOUT, port=443, api_key=None):
         self.base_url = f"https://{host}:{port}/jsonrpc"
         self.timeout = timeout
         self.session = None
+        self.api_key = api_key  # REST API Admin token auth, alternative to user/password
         self._id = 0
         self._ctx = ssl.create_default_context()
         if not verify_ssl:
@@ -73,11 +74,17 @@ class FmgClient:
         self._id += 1
         return self._id
 
+    def _headers(self):
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        return headers
+
     def _post(self, payload):
         req = urllib.request.Request(
             self.base_url,
             data=json.dumps(payload).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
+            headers=self._headers(),
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=self.timeout, context=self._ctx) as resp:
@@ -117,7 +124,15 @@ class FmgClient:
             )
         return first
 
-    def login(self, user, password):
+    def login(self, user=None, password=None):
+        if self.api_key:
+            # REST API Admin token auth: no session to establish, the
+            # Authorization header (set in _headers) carries it on every
+            # call. Do one cheap call up front so a bad/expired token
+            # surfaces immediately, like a password login failure would.
+            self._call("get", "/sys/status", use_session=False)
+            return
+
         # session token is returned at the top level of the response, not
         # inside "result", so this can't reuse the generic _call() helper.
         payload = {
@@ -142,7 +157,7 @@ class FmgClient:
         self.session = session
 
     def logout(self):
-        if not self.session:
+        if self.api_key or not self.session:
             return
         try:
             self._call("exec", "/sys/logout")
@@ -293,9 +308,10 @@ def classify_devices(devices, all_devices=False):
 
 def run_scan(
     host,
-    user,
-    password,
     adom,
+    user=None,
+    password=None,
+    api_key=None,
     port=443,
     all_devices=False,
     dry_run=False,
@@ -308,6 +324,9 @@ def run_scan(
 ):
     """Full scan + retrieve flow against one FortiManager ADOM.
 
+    Authenticates either with a user/password admin account, or with a
+    REST API Admin token (api_key) - pass exactly one of the two.
+
     Returns (rows, exit_code). Calls on_event(kind, **payload) at each
     meaningful step so a caller (CLI logger, web UI progress state, ...)
     can report progress without duplicating this logic.
@@ -318,7 +337,7 @@ def run_scan(
         if on_event:
             on_event(kind, **payload)
 
-    client = FmgClient(host, verify_ssl=verify_ssl, timeout=timeout, port=port)
+    client = FmgClient(host, verify_ssl=verify_ssl, timeout=timeout, port=port, api_key=api_key)
     client.login(user, password)  # raises FmgApiError - let the caller handle it
     emit("login_ok")
 

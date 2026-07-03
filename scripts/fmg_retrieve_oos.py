@@ -25,10 +25,13 @@ Usage:
     fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --user api-retrieve --all
     fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --user api-retrieve --no-wait
 
-Credentials:
-    The password is NEVER passed on the command line. Provide it via:
-      - env var FMG_PASSWORD, or
-      - env var FMG_PASSWORD_FILE=/path/to/secret (file mode should be 600)
+Credentials - two mutually exclusive modes:
+  - Classic admin account: --user + a password, NEVER passed on the command
+    line. Provide the password via env var FMG_PASSWORD, or
+    FMG_PASSWORD_FILE=/path/to/secret (file mode should be 600).
+  - REST API Admin (token auth, recommended by Fortinet): --api-key-file
+    pointing at a file containing the token, or env var FMG_API_KEY_FILE /
+    FMG_API_KEY. --user is not needed in this mode.
 
 Exit codes (useful for cron/monitoring):
     0  OK - nothing out of sync, or all retrieves succeeded
@@ -67,6 +70,18 @@ def read_password(args):
     return None
 
 
+def read_api_key(args):
+    if args.api_key_file:
+        with open(args.api_key_file, "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    if os.environ.get("FMG_API_KEY_FILE"):
+        with open(os.environ["FMG_API_KEY_FILE"], "r", encoding="utf-8") as fh:
+            return fh.read().strip()
+    if os.environ.get("FMG_API_KEY"):
+        return os.environ["FMG_API_KEY"]
+    return None
+
+
 def build_arg_parser():
     p = argparse.ArgumentParser(
         description="Scan a FortiManager ADOM over the JSON-RPC API and retrieve "
@@ -75,11 +90,19 @@ def build_arg_parser():
     p.add_argument("--host", required=True, help="FortiManager hostname or IP")
     p.add_argument("--port", type=int, default=443)
     p.add_argument("--adom", required=True, help="ADOM to scan (e.g. the backup ADOM)")
-    p.add_argument("--user", required=True, help="API user (dedicated, least-privilege)")
+    p.add_argument(
+        "--user", help="API user (dedicated, least-privilege). Required unless --api-key-file is used."
+    )
     p.add_argument(
         "--password-file",
         help="Path to a file containing the API user's password (mode 600 recommended). "
         "Falls back to FMG_PASSWORD_FILE or FMG_PASSWORD env vars.",
+    )
+    p.add_argument(
+        "--api-key-file",
+        help="Path to a file containing a FortiManager REST API Admin token (mode 600 "
+        "recommended), used instead of --user/password. Falls back to FMG_API_KEY_FILE "
+        "or FMG_API_KEY env vars.",
     )
     p.add_argument(
         "--all", action="store_true", help="Consider every device in the ADOM, not just out-of-sync ones "
@@ -176,12 +199,22 @@ def main():
     args = build_arg_parser().parse_args()
     log = setup_logging(args)
 
-    password = read_password(args)
-    if not password:
-        log.error(
-            "no password provided: use --password-file, or set FMG_PASSWORD_FILE / FMG_PASSWORD"
-        )
-        return 3
+    api_key = read_api_key(args)
+    password = None
+    if not api_key:
+        if not args.user:
+            log.error(
+                "no credentials: use --user + --password-file (or FMG_PASSWORD_FILE/"
+                "FMG_PASSWORD), or --api-key-file (or FMG_API_KEY_FILE/FMG_API_KEY) "
+                "for a REST API Admin token"
+            )
+            return 3
+        password = read_password(args)
+        if not password:
+            log.error(
+                "no password provided: use --password-file, or set FMG_PASSWORD_FILE / FMG_PASSWORD"
+            )
+            return 3
 
     try:
         rows, exit_code = run_scan(
@@ -189,6 +222,7 @@ def main():
             port=args.port,
             user=args.user,
             password=password,
+            api_key=api_key,
             adom=args.adom,
             all_devices=args.all,
             dry_run=args.dry_run,

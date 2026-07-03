@@ -26,12 +26,21 @@ distance depuis un serveur Linux, ce qui correspond au besoin initial.
 
 ## Prérequis côté FortiManager
 
-- Un compte admin dédié, à privilèges limités (profil JSON API en lecture
-  sur le Device Manager de l'ADOM concerné + droit d'exécuter
-  "Retrieve Config"). Ne pas réutiliser un compte admin générique.
+- Un compte API dédié, à privilèges limités (accès Device Manager sur
+  l'ADOM concerné + droit d'exécuter "Retrieve Config", JSON API Access en
+  Read-Write). Ne pas réutiliser un compte admin générique. Deux types de
+  compte possibles, les deux sont supportés :
+  - **Administrator classique** (System Settings > Administrators > Create
+    New > Administrator) : authentification par mot de passe.
+  - **REST API Admin** (System Settings > Administrators > Create New >
+    REST API Admin) : authentification par clé API (token), recommandé
+    par Fortinet — pas de session à gérer, plus sûr.
 - Accès HTTPS (443) atteignable depuis le serveur Linux.
 - Idéalement, restreindre la source IP autorisée pour ce compte API
-  (System Settings > Administrators > Trusted Hosts).
+  (Trusted Hosts sur le compte) à l'IP de ce serveur Linux.
+- Si le FortiManager a un certificat auto-signé, il faudra l'option
+  "ignorer la vérification TLS" (`--insecure` en CLI, case à cocher dans
+  la webUI) — sinon la connexion échoue avec une erreur de certificat.
 
 ## Structure du dépôt
 
@@ -102,6 +111,10 @@ FMG_PASSWORD_FILE=/etc/fmg-retrieve-oos/fmg.passwd \
 
 # Retrieve de TOUS les devices de l'ADOM, pas seulement les out-of-sync
 ./scripts/fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --user api-retrieve --all
+
+# Avec un compte REST API Admin (clé API) plutôt qu'un mot de passe
+FMG_API_KEY_FILE=/etc/fmg-retrieve-oos/fmg.apikey \
+  ./scripts/fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --dry-run
 ```
 
 Codes de sortie : `0` = OK, `1` = au moins un retrieve en échec/timeout,

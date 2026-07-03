@@ -102,13 +102,30 @@
           <label>ADOM</label>
           <input type="text" name="adom" value="{{ cfg.adom }}" required>
         </div>
-        <div class="field">
-          <label>Utilisateur API</label>
-          <input type="text" name="user" value="{{ cfg.user }}" required>
+        <div class="field" style="grid-column: 1 / -1;">
+          <label>Mode d'authentification</label>
+          <div style="display:flex; gap:20px; margin-top:6px;">
+            <label style="display:flex; align-items:center; gap:6px; font-weight:normal; color:var(--text); margin:0;">
+              <input type="radio" name="auth_mode" value="password" id="auth_password" {{ 'checked' if cfg.auth_mode != 'apikey' }}>
+              Mot de passe (compte Administrator classique)
+            </label>
+            <label style="display:flex; align-items:center; gap:6px; font-weight:normal; color:var(--text); margin:0;">
+              <input type="radio" name="auth_mode" value="apikey" id="auth_apikey" {{ 'checked' if cfg.auth_mode == 'apikey' }}>
+              Clé API (REST API Admin)
+            </label>
+          </div>
         </div>
-        <div class="field">
+        <div class="field auth-password-field">
+          <label>Utilisateur API</label>
+          <input type="text" name="user" value="{{ cfg.user }}">
+        </div>
+        <div class="field auth-password-field">
           <label>Mot de passe {% if has_password %}(déjà enregistré, laisser vide pour ne pas changer){% endif %}</label>
           <input type="password" name="password" autocomplete="new-password" placeholder="{{ '••••••••' if has_password else '' }}">
+        </div>
+        <div class="field auth-apikey-field">
+          <label>Clé API {% if has_api_key %}(déjà enregistrée, laisser vide pour ne pas changer){% endif %}</label>
+          <input type="password" name="api_key" autocomplete="new-password" placeholder="{{ '••••••••' if has_api_key else '' }}">
         </div>
         <div class="field">
           <label>Dossier de log (un fichier horodaté par run)</label>
@@ -200,6 +217,15 @@
 </div>
 
 <script>
+function updateAuthModeFields() {
+  const apikey = document.getElementById('auth_apikey').checked;
+  document.querySelectorAll('.auth-password-field').forEach(el => el.style.display = apikey ? 'none' : '');
+  document.querySelectorAll('.auth-apikey-field').forEach(el => el.style.display = apikey ? '' : 'none');
+}
+document.getElementById('auth_password').addEventListener('change', updateAuthModeFields);
+document.getElementById('auth_apikey').addEventListener('change', updateAuthModeFields);
+updateAuthModeFields();
+
 const REPORT_COLUMNS = {{ report_columns|tojson }};
 
 const head = document.getElementById('result-head');

@@ -38,22 +38,11 @@ if [ "$MODE" = "1" ] || [ "$MODE" = "3" ]; then
   echo "--- Configuration CLI ---"
   read -rp "Host/IP du FortiManager : " FMG_HOST
   read -rp "ADOM à scanner (ex: BACKUP) : " FMG_ADOM
-  read -rp "Utilisateur API FortiManager : " FMG_USER
-  read -rsp "Mot de passe de ce compte API : " FMG_PASS
-  echo
+  echo "Type de compte API sur ce FortiManager :"
+  echo "  1) Administrator classique (mot de passe)"
+  echo "  2) REST API Admin (clé API / token) - recommandé par Fortinet"
+  read -rp "Choix [1/2] : " FMG_AUTH_MODE
   read -rp "Certificat TLS auto-signé sur ce FortiManager (ignorer la vérification) ? [o/N] : " FMG_INSECURE_ANSWER
-
-  cat > "$CONFIG_DIR/fmg.env" <<EOF
-FMG_HOST=$FMG_HOST
-FMG_ADOM=$FMG_ADOM
-FMG_USER=$FMG_USER
-EOF
-
-  printf '%s' "$FMG_PASS" > "$CONFIG_DIR/fmg.passwd"
-  chmod 600 "$CONFIG_DIR/fmg.passwd" "$CONFIG_DIR/fmg.env"
-  unset FMG_PASS
-
-  chmod +x "$REPO_DIR/scripts/fmg_retrieve_oos.py"
 
   INSECURE_LINE=""
   DRY_RUN_INSECURE_FLAG=""
@@ -62,27 +51,79 @@ EOF
     DRY_RUN_INSECURE_FLAG=" --insecure"
   fi
 
-  {
-    echo "[Unit]"
-    echo "Description=Retrieve config from out-of-sync FortiGates via FortiManager API"
-    echo "Wants=network-online.target"
-    echo "After=network-online.target"
+  cat > "$CONFIG_DIR/fmg.env" <<EOF
+FMG_HOST=$FMG_HOST
+FMG_ADOM=$FMG_ADOM
+EOF
+
+  chmod +x "$REPO_DIR/scripts/fmg_retrieve_oos.py"
+
+  if [ "$FMG_AUTH_MODE" = "2" ]; then
+    read -rsp "Clé API (token du compte REST API Admin) : " FMG_API_KEY
     echo
-    echo "[Service]"
-    echo "Type=oneshot"
-    echo "EnvironmentFile=$CONFIG_DIR/fmg.env"
-    echo "ExecStart=$REPO_DIR/scripts/fmg_retrieve_oos.py \\"
-    echo "    --host \${FMG_HOST} \\"
-    echo "    --adom \${FMG_ADOM} \\"
-    echo "    --user \${FMG_USER} \\"
-    echo "    --password-file $CONFIG_DIR/fmg.passwd \\"
-    if [ -n "$INSECURE_LINE" ]; then
-      echo "    --log-dir $LOG_DIR \\"
-      echo "$INSECURE_LINE"
-    else
-      echo "    --log-dir $LOG_DIR"
-    fi
-  } > "$SYSTEMD_DIR/fmg-retrieve-oos.service"
+    printf '%s' "$FMG_API_KEY" > "$CONFIG_DIR/fmg.apikey"
+    chmod 600 "$CONFIG_DIR/fmg.apikey"
+    unset FMG_API_KEY
+
+    {
+      echo "[Unit]"
+      echo "Description=Retrieve config from out-of-sync FortiGates via FortiManager API"
+      echo "Wants=network-online.target"
+      echo "After=network-online.target"
+      echo
+      echo "[Service]"
+      echo "Type=oneshot"
+      echo "EnvironmentFile=$CONFIG_DIR/fmg.env"
+      echo "ExecStart=$REPO_DIR/scripts/fmg_retrieve_oos.py \\"
+      echo "    --host \${FMG_HOST} \\"
+      echo "    --adom \${FMG_ADOM} \\"
+      echo "    --api-key-file $CONFIG_DIR/fmg.apikey \\"
+      if [ -n "$INSECURE_LINE" ]; then
+        echo "    --log-dir $LOG_DIR \\"
+        echo "$INSECURE_LINE"
+      else
+        echo "    --log-dir $LOG_DIR"
+      fi
+    } > "$SYSTEMD_DIR/fmg-retrieve-oos.service"
+
+    TEST_CMD="sudo env FMG_API_KEY_FILE=$CONFIG_DIR/fmg.apikey \\
+    $REPO_DIR/scripts/fmg_retrieve_oos.py --host $FMG_HOST --adom $FMG_ADOM --dry-run$DRY_RUN_INSECURE_FLAG"
+  else
+    read -rp "Utilisateur API FortiManager : " FMG_USER
+    read -rsp "Mot de passe de ce compte API : " FMG_PASS
+    echo
+    echo "FMG_USER=$FMG_USER" >> "$CONFIG_DIR/fmg.env"
+    printf '%s' "$FMG_PASS" > "$CONFIG_DIR/fmg.passwd"
+    chmod 600 "$CONFIG_DIR/fmg.passwd"
+    unset FMG_PASS
+
+    {
+      echo "[Unit]"
+      echo "Description=Retrieve config from out-of-sync FortiGates via FortiManager API"
+      echo "Wants=network-online.target"
+      echo "After=network-online.target"
+      echo
+      echo "[Service]"
+      echo "Type=oneshot"
+      echo "EnvironmentFile=$CONFIG_DIR/fmg.env"
+      echo "ExecStart=$REPO_DIR/scripts/fmg_retrieve_oos.py \\"
+      echo "    --host \${FMG_HOST} \\"
+      echo "    --adom \${FMG_ADOM} \\"
+      echo "    --user \${FMG_USER} \\"
+      echo "    --password-file $CONFIG_DIR/fmg.passwd \\"
+      if [ -n "$INSECURE_LINE" ]; then
+        echo "    --log-dir $LOG_DIR \\"
+        echo "$INSECURE_LINE"
+      else
+        echo "    --log-dir $LOG_DIR"
+      fi
+    } > "$SYSTEMD_DIR/fmg-retrieve-oos.service"
+
+    TEST_CMD="sudo env FMG_PASSWORD_FILE=$CONFIG_DIR/fmg.passwd \\
+    $REPO_DIR/scripts/fmg_retrieve_oos.py --host $FMG_HOST --adom $FMG_ADOM --user $FMG_USER --dry-run$DRY_RUN_INSECURE_FLAG"
+  fi
+
+  chmod 600 "$CONFIG_DIR/fmg.env"
   cp "$REPO_DIR/systemd/fmg-retrieve-oos.timer" "$SYSTEMD_DIR/fmg-retrieve-oos.timer"
 
   systemctl daemon-reload
@@ -90,8 +131,7 @@ EOF
 
   echo
   echo "CLI installé. Test immédiat (dry-run, ne déclenche rien) :"
-  echo "  sudo env FMG_PASSWORD_FILE=$CONFIG_DIR/fmg.passwd \\"
-  echo "    $REPO_DIR/scripts/fmg_retrieve_oos.py --host $FMG_HOST --adom $FMG_ADOM --user $FMG_USER --dry-run$DRY_RUN_INSECURE_FLAG"
+  echo "  $TEST_CMD"
   echo "Scan à la demande (déclenche un vrai run) : sudo systemctl start fmg-retrieve-oos.service"
   echo "Scan périodique actif toutes les 15 min (systemctl status fmg-retrieve-oos.timer)."
 fi
