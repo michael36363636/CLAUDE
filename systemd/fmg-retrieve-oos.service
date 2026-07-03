@@ -11,6 +11,6 @@ ExecStart=/opt/fmg-retrieve-oos/scripts/fmg_retrieve_oos.py \
     --adom ${FMG_ADOM} \
     --user ${FMG_USER} \
     --password-file /etc/fmg-retrieve-oos/fmg.passwd \
-    --log-file /var/log/fmg-retrieve-oos.log
+    --log-dir /var/log/fmg-retrieve-oos
 User=fmg-retrieve
 Group=fmg-retrieve

@@ -10,10 +10,11 @@ for every device whose config is out-of-sync (conf_status == "outofsync"
 i.e. the API equivalent of "diagnose test deploymanager reloadconf <oid>",
 but done properly over HTTPS/JSON-RPC instead of an SSH CLI scrape.
 
-Every run writes a clear report to the log (and to --log-file if given):
-a table listing every device in the ADOM with its sync/connectivity status,
-whether a retrieve was triggered (and at what time), and the outcome
-(success/failed + reason).
+Every run writes a clear report to stdout and, unless disabled, to its own
+timestamped file under --log-dir (one file per run, e.g.
+fmg-retrieve-oos_2026-07-03_14-05-00.log): a table listing every device in
+the ADOM with its sync/connectivity status, whether a retrieve was
+triggered (and at what time), and the outcome (success/failed + reason).
 
 No third-party dependencies: only the Python standard library is used, so
 it can be dropped on any Linux host with Python 3.6+.
@@ -43,9 +44,15 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 
-from fmg_common import FmgApiError, format_report_table, run_scan  # noqa: E402
-
-DEFAULT_LOG_FILE = "/var/log/fmg-retrieve-oos.log"
+from fmg_common import (  # noqa: E402
+    DEFAULT_LOG_DIR,
+    DEFAULT_LOG_RETENTION_DAYS,
+    FmgApiError,
+    format_report_table,
+    make_run_log_path,
+    purge_old_logs,
+    run_scan,
+)
 
 
 def read_password(args):
@@ -96,10 +103,19 @@ def build_arg_parser():
         help="Skip TLS certificate verification (lab use only, avoid in production)",
     )
     p.add_argument(
-        "--log-file",
-        default=DEFAULT_LOG_FILE,
-        help=f"Log file path, in addition to stdout (default: {DEFAULT_LOG_FILE}). "
-        "Pass an empty string to disable file logging.",
+        "--log-dir",
+        default=DEFAULT_LOG_DIR,
+        help=f"Directory for the per-run log file, in addition to stdout "
+        f"(default: {DEFAULT_LOG_DIR}). One timestamped file is created per "
+        "run (fmg-retrieve-oos_YYYY-MM-DD_HH-MM-SS.log). Pass an empty "
+        "string to disable file logging.",
+    )
+    p.add_argument(
+        "--log-retention-days",
+        type=int,
+        default=DEFAULT_LOG_RETENTION_DAYS,
+        help=f"Delete previous run log files older than this many days at the "
+        f"start of each run (default: {DEFAULT_LOG_RETENTION_DAYS}). 0 disables purging.",
     )
     p.add_argument("-v", "--verbose", action="store_true")
     return p
@@ -114,15 +130,19 @@ def setup_logging(args):
     console.setFormatter(fmt)
     log.addHandler(console)
 
-    if args.log_file:
+    if args.log_dir:
         try:
-            fh = logging.FileHandler(args.log_file)
+            os.makedirs(args.log_dir, exist_ok=True)
+            purge_old_logs(args.log_dir, args.log_retention_days)
+            log_path = make_run_log_path(args.log_dir)
+            fh = logging.FileHandler(log_path)
             fh.setFormatter(fmt)
             log.addHandler(fh)
+            log.info("Log de ce run: %s", log_path)
         except OSError as exc:
             log.warning(
-                "cannot write to log file '%s' (%s); continuing with stdout only",
-                args.log_file, exc,
+                "cannot write to log dir '%s' (%s); continuing with stdout only",
+                args.log_dir, exc,
             )
 
     return log

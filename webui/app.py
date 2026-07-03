@@ -25,7 +25,16 @@ from flask import Flask, Response, jsonify, redirect, render_template, request, 
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "lib"))
 
-from fmg_common import FmgApiError, REPORT_COLUMNS, run_scan  # noqa: E402
+from fmg_common import (  # noqa: E402
+    DEFAULT_LOG_DIR,
+    DEFAULT_LOG_RETENTION_DAYS,
+    FmgApiError,
+    REPORT_COLUMNS,
+    format_report_table,
+    make_run_log_path,
+    purge_old_logs,
+    run_scan,
+)
 
 CONFIG_DIR = os.environ.get(
     "FMG_WEBUI_CONFIG_DIR", os.path.expanduser("~/.config/fmg-retrieve-oos")
@@ -38,7 +47,8 @@ DEFAULT_CONFIG = {
     "port": 443,
     "adom": "",
     "user": "",
-    "log_file": "/var/log/fmg-retrieve-oos.log",
+    "log_dir": DEFAULT_LOG_DIR,
+    "log_retention_days": DEFAULT_LOG_RETENTION_DAYS,
     "insecure": False,
     "all_devices": False,
     "poll_interval": 5,
@@ -73,6 +83,7 @@ state = {
     "exit_code": None,
     "error": None,
     "log_lines": [],
+    "log_path": None,
     "next_run_at": None,
 }
 
@@ -127,13 +138,33 @@ def require_auth():
 
 # ---- scan execution -------------------------------------------------------
 
-def _log(message):
-    ts = time.strftime("%H:%M:%S")
-    state["log_lines"].append(f"{ts} {message}")
-    state["log_lines"] = state["log_lines"][-300:]
+def _open_run_log(cfg):
+    """Create this run's timestamped log file, purging old ones first.
+    Returns (path, file_object) or (None, None) if disabled/unwritable."""
+    log_dir = cfg.get("log_dir")
+    if not log_dir:
+        return None, None
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        purge_old_logs(log_dir, cfg.get("log_retention_days"))
+        path = make_run_log_path(log_dir)
+        return path, open(path, "w", encoding="utf-8")
+    except OSError:
+        return None, None
 
 
 def _run_worker(cfg, password, trigger, dry_run):
+    log_path, log_fh = _open_run_log(cfg)
+
+    def _log(message):
+        ts = time.strftime("%H:%M:%S")
+        line = f"{ts} {message}"
+        state["log_lines"].append(line)
+        state["log_lines"] = state["log_lines"][-300:]
+        if log_fh:
+            log_fh.write(line + "\n")
+            log_fh.flush()
+
     with lock:
         state.update(
             phase="running",
@@ -148,8 +179,13 @@ def _run_worker(cfg, password, trigger, dry_run):
             exit_code=None,
             error=None,
             log_lines=[],
+            log_path=log_path,
         )
         _log(f"Démarrage du scan ({trigger}) sur {cfg['host']} / ADOM {cfg['adom']}")
+        if log_path:
+            _log(f"Log de ce run: {log_path}")
+        elif cfg.get("log_dir"):
+            _log(f"Impossible d'écrire dans '{cfg['log_dir']}', log affiché ici uniquement.")
 
     def on_event(kind, **payload):
         with lock:
@@ -196,6 +232,9 @@ def _run_worker(cfg, password, trigger, dry_run):
             state["current_device"] = None
             state["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             _log(f"Scan terminé (code={exit_code}).")
+            if log_fh:
+                log_fh.write("\n" + format_report_table(rows) + "\n")
+                log_fh.flush()
     except FmgApiError as exc:
         with lock:
             state["phase"] = "error"
@@ -210,6 +249,9 @@ def _run_worker(cfg, password, trigger, dry_run):
             state["error"] = f"erreur inattendue: {exc}"
             state["finished_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             _log(f"ERREUR inattendue: {exc}")
+    finally:
+        if log_fh:
+            log_fh.close()
 
 
 def try_start_run(trigger, dry_run=False):
@@ -272,7 +314,10 @@ def save_config_route():
     cfg["port"] = int(request.form.get("port") or 443)
     cfg["adom"] = request.form.get("adom", "").strip()
     cfg["user"] = request.form.get("user", "").strip()
-    cfg["log_file"] = request.form.get("log_file", "").strip()
+    cfg["log_dir"] = request.form.get("log_dir", "").strip()
+    cfg["log_retention_days"] = max(
+        0, int(request.form.get("log_retention_days") or DEFAULT_LOG_RETENTION_DAYS)
+    )
     cfg["insecure"] = request.form.get("insecure") == "on"
     cfg["all_devices"] = request.form.get("all_devices") == "on"
     cfg["poll_interval"] = max(1, int(request.form.get("poll_interval") or 5))

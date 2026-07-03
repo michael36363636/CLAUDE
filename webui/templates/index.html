@@ -111,8 +111,12 @@
           <input type="password" name="password" autocomplete="new-password" placeholder="{{ '••••••••' if has_password else '' }}">
         </div>
         <div class="field">
-          <label>Fichier de log</label>
-          <input type="text" name="log_file" value="{{ cfg.log_file }}">
+          <label>Dossier de log (un fichier horodaté par run)</label>
+          <input type="text" name="log_dir" value="{{ cfg.log_dir }}">
+        </div>
+        <div class="field">
+          <label>Rétention des logs (jours, 0 = jamais purger)</label>
+          <input type="number" name="log_retention_days" value="{{ cfg.log_retention_days }}" min="0">
         </div>
         <div class="field">
           <label>Fréquence du scan automatique (minutes)</label>
@@ -271,7 +275,8 @@ async function poll() {
     let meta = '';
     if (s.started_at) meta += 'Démarré: ' + s.started_at + '  ';
     if (s.finished_at) meta += '· Terminé: ' + s.finished_at + '  ';
-    if (s.target_total) meta += `· ${s.target_done}/${s.target_total} device(s) traité(s)`;
+    if (s.target_total) meta += `· ${s.target_done}/${s.target_total} device(s) traité(s)  `;
+    if (s.log_path) meta += '· Log: ' + s.log_path;
     if (s.phase === 'error' && s.error) meta += '  · ' + s.error;
     document.getElementById('progress-meta').textContent = meta;
 

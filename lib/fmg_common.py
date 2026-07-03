@@ -9,7 +9,9 @@ retrieved.
 Standard library only.
 """
 
+import glob
 import json
+import os
 import ssl
 import time
 import urllib.error
@@ -18,6 +20,10 @@ import urllib.request
 DEFAULT_TIMEOUT = 30
 DEFAULT_TASK_POLL_INTERVAL = 5
 DEFAULT_TASK_TIMEOUT = 600
+
+DEFAULT_LOG_DIR = "/var/log/fmg-retrieve-oos"
+DEFAULT_LOG_RETENTION_DAYS = 30
+LOG_FILENAME_PREFIX = "fmg-retrieve-oos"
 
 # Only this exact conf_status triggers a retrieve. "unknown" (device never
 # checked in / FMG can't tell) and any other value are deliberately left
@@ -198,6 +204,26 @@ def wait_for_task(client, task_id, poll_interval, timeout, on_poll=None):
         return task.get("state"), True, detail or "OK"
     reason = detail or f"état={task.get('state')} err={err}"
     return task.get("state"), False, reason
+
+
+def make_run_log_path(log_dir, when=None):
+    """One timestamped log file per run, e.g. fmg-retrieve-oos_2026-07-03_14-05-00.log"""
+    ts = time.strftime("%Y-%m-%d_%H-%M-%S", when or time.localtime())
+    return os.path.join(log_dir, f"{LOG_FILENAME_PREFIX}_{ts}.log")
+
+
+def purge_old_logs(log_dir, retention_days):
+    """Delete previous run log files older than retention_days. No-op if
+    retention_days is falsy (0/None disables purging)."""
+    if not retention_days or retention_days <= 0:
+        return
+    cutoff = time.time() - retention_days * 86400
+    for path in glob.glob(os.path.join(log_dir, f"{LOG_FILENAME_PREFIX}_*.log")):
+        try:
+            if os.path.getmtime(path) < cutoff:
+                os.remove(path)
+        except OSError:
+            pass
 
 
 def format_report_table(rows):

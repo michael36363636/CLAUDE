@@ -63,9 +63,9 @@ echo -n 'le-mot-de-passe' | sudo tee /etc/fmg-retrieve-oos/fmg.passwd >/dev/null
 sudo chmod 600 /etc/fmg-retrieve-oos/fmg.passwd
 sudo chown fmg-retrieve:fmg-retrieve /etc/fmg-retrieve-oos/fmg.passwd
 
-# fichier de log par défaut : à créer avec les droits de l'utilisateur qui lance le script
-sudo touch /var/log/fmg-retrieve-oos.log
-sudo chown fmg-retrieve:fmg-retrieve /var/log/fmg-retrieve-oos.log
+# dossier de log par défaut : à créer avec les droits de l'utilisateur qui lance le script
+sudo mkdir -p /var/log/fmg-retrieve-oos
+sudo chown fmg-retrieve:fmg-retrieve /var/log/fmg-retrieve-oos
 ```
 
 Le mot de passe n'est **jamais** passé en argument CLI (visible dans `ps`),
@@ -94,15 +94,26 @@ Codes de sortie : `0` = OK, `1` = au moins un retrieve en échec/timeout,
 
 ### Rapport / log
 
-**Emplacement du fichier de log** : par défaut `/var/log/fmg-retrieve-oos.log`
-(constante `DEFAULT_LOG_FILE` en tête du script), en plus de la sortie
-stdout (donc aussi visible dans `journalctl -u fmg-retrieve-oos.service`
-si lancé via le timer systemd). Change avec `--log-file /autre/chemin.log`,
-ou désactive l'écriture fichier avec `--log-file ""`. Si le chemin n'est
-pas inscriptible (droits insuffisants), le script log un warning et continue
-sur stdout seul plutôt que d'échouer — pense à créer
-`/var/log/fmg-retrieve-oos.log` avec les bons droits pour l'utilisateur qui
-exécute le script (voir `chown`/`touch` dans la section systemd ci-dessous).
+**Un fichier par run** : chaque exécution écrit son propre fichier
+horodaté dans `--log-dir` (défaut `/var/log/fmg-retrieve-oos`), nommé
+`fmg-retrieve-oos_AAAA-MM-JJ_HH-MM-SS.log` — pas de fichier unique qui
+grossit indéfiniment. Le nom du fichier créé est aussi affiché en première
+ligne du log (utile pour le retrouver depuis `journalctl`). Idem côté
+sortie stdout, donc visible dans `journalctl -u fmg-retrieve-oos.service`
+si lancé via le timer systemd. Change de dossier avec `--log-dir
+/autre/dossier`, ou désactive l'écriture fichier avec `--log-dir ""`. Si
+le dossier n'est pas accessible en écriture, le script log un warning et
+continue sur stdout seul plutôt que d'échouer.
+
+**Rétention** : à chaque run, les anciens fichiers de plus de
+`--log-retention-days` jours (défaut 30) sont automatiquement supprimés du
+dossier de log, pour éviter que ça grossisse indéfiniment avec un scan
+fréquent. `--log-retention-days 0` désactive la purge.
+
+Les fichiers sont du texte UTF-8 brut, lisibles avec n'importe quel outil
+(`cat`, `less -S` pour éviter le retour à la ligne sur le tableau large,
+`tail -f` pendant qu'un run est en cours, `grep FAILED *.log` pour
+retrouver rapidement les échecs sur plusieurs runs, etc.).
 
 Chaque exécution termine par un tableau récapitulatif (dans stdout et dans
 le fichier de log) :
@@ -143,7 +154,8 @@ sudo systemctl enable --now fmg-retrieve-oos.timer
 
 L'intervalle par défaut est 15 minutes (`OnCalendar=*:0/15` dans le
 `.timer`), à ajuster. Logs consultables via `journalctl -u
-fmg-retrieve-oos.service` ou dans `/var/log/fmg-retrieve-oos.log`.
+fmg-retrieve-oos.service`, ou fichier par fichier dans
+`/var/log/fmg-retrieve-oos/` (un par run, purgés après 30 jours).
 
 ### cron (alternative)
 
@@ -159,8 +171,8 @@ en local sur le serveur et consultée depuis un navigateur via un tunnel
 SSH — pas d'installation côté poste client.
 
 Elle permet de :
-- configurer host/port/ADOM/utilisateur/mot de passe FortiManager, chemin
-  du fichier de log, et les options avancées (TLS, timeouts) ;
+- configurer host/port/ADOM/utilisateur/mot de passe FortiManager, dossier
+  de log + rétention, et les options avancées (TLS, timeouts) ;
 - lancer un scan à la demande (bouton "Lancer maintenant" ou "Tester -
   dry-run") avec une barre de progression et un log en direct pendant que
   ça tourne ;
