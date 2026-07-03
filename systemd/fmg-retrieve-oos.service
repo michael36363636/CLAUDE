@@ -6,7 +6,7 @@ After=network-online.target
 [Service]
 Type=oneshot
 EnvironmentFile=/etc/fmg-retrieve-oos/fmg.env
-ExecStart=/usr/local/bin/fmg_retrieve_oos.py \
+ExecStart=/opt/fmg-retrieve-oos/scripts/fmg_retrieve_oos.py \
     --host ${FMG_HOST} \
     --adom ${FMG_ADOM} \
     --user ${FMG_USER} \

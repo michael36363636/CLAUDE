@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>fmg-retrieve-oos</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --panel: #ffffff; --text: #1c2027; --muted: #6b7280;
+    --border: #e2e5ea; --accent: #2563eb; --ok: #16a34a; --bad: #dc2626; --warn: #d97706;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg); color: var(--text); padding: 24px;
+  }
+  .wrap { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0 0 8px; }
+  .panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 18px 20px; }
+  .panel h2 { font-size: 15px; margin: 0 0 14px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px 16px; }
+  label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 4px; }
+  input[type=text], input[type=number], input[type=password] {
+    width: 100%; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 14px; background: #fff; color: var(--text);
+  }
+  .field { margin-bottom: 4px; }
+  .check { display: flex; align-items: center; gap: 8px; font-size: 13px; margin-top: 8px; }
+  .check label { margin: 0; color: var(--text); }
+  details summary { cursor: pointer; font-size: 13px; color: var(--muted); margin: 10px 0; }
+  button {
+    border: none; border-radius: 6px; padding: 9px 16px; font-size: 14px; cursor: pointer;
+    font-weight: 600;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-secondary { background: #eef0f3; color: var(--text); }
+  .btn-row { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+  .error-banner {
+    background: #fef2f2; border: 1px solid #fecaca; color: var(--bad); padding: 10px 14px;
+    border-radius: 8px; font-size: 13px;
+  }
+  .status-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .badge {
+    display: inline-block; padding: 3px 10px; border-radius: 999px; font-size: 12px; font-weight: 700;
+    background: #eef0f3; color: var(--muted);
+  }
+  .badge.running { background: #dbeafe; color: var(--accent); }
+  .badge.done { background: #dcfce7; color: var(--ok); }
+  .badge.error { background: #fee2e2; color: var(--bad); }
+  .progress-outer { background: #eef0f3; border-radius: 999px; height: 10px; overflow: hidden; }
+  .progress-inner { background: var(--accent); height: 100%; width: 0%; transition: width .3s; }
+  .meta { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .summary { display: flex; gap: 18px; flex-wrap: wrap; margin: 14px 0; }
+  .summary .stat { text-align: center; }
+  .summary .stat .n { font-size: 20px; font-weight: 700; }
+  .summary .stat .l { font-size: 11px; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  th { color: var(--muted); font-weight: 600; }
+  .tbl-wrap { overflow-x: auto; }
+  .pill { padding: 1px 7px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+  .pill.DESYNC { background: #fef3c7; color: var(--warn); }
+  .pill.SYNC { background: #dcfce7; color: var(--ok); }
+  .pill.UP { background: #dcfce7; color: var(--ok); }
+  .pill.DOWN { background: #fee2e2; color: var(--bad); }
+  .pill.SUCCESS { background: #dcfce7; color: var(--ok); }
+  .pill.FAILED { background: #fee2e2; color: var(--bad); }
+  .log { background: #0f172a; color: #cbd5e1; font-family: ui-monospace, Menlo, monospace; font-size: 12px;
+    padding: 10px 12px; border-radius: 8px; max-height: 220px; overflow-y: auto; white-space: pre-wrap; }
+
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #0f1115; --panel: #171a21; --text: #e5e7eb; --muted: #9aa3af; --border: #2a2f3a; }
+    input { background: #10131a !important; color: var(--text) !important; }
+    .btn-secondary { background: #232833; color: var(--text); }
+    .badge { background: #232833; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div>
+    <h1>fmg-retrieve-oos</h1>
+    <p class="sub">Scan de l'ADOM FortiManager et retrieve des FortiGate désynchronisés &amp; joignables.</p>
+  </div>
+
+  {% if error %}<div class="error-banner">{{ error }}</div>{% endif %}
+
+  <div class="panel">
+    <h2>Configuration</h2>
+    <form method="post" action="{{ url_for('save_config_route') }}">
+      <div class="grid">
+        <div class="field">
+          <label>Host / IP du FortiManager</label>
+          <input type="text" name="host" value="{{ cfg.host }}" required>
+        </div>
+        <div class="field">
+          <label>Port</label>
+          <input type="number" name="port" value="{{ cfg.port }}">
+        </div>
+        <div class="field">
+          <label>ADOM</label>
+          <input type="text" name="adom" value="{{ cfg.adom }}" required>
+        </div>
+        <div class="field">
+          <label>Utilisateur API</label>
+          <input type="text" name="user" value="{{ cfg.user }}" required>
+        </div>
+        <div class="field">
+          <label>Mot de passe {% if has_password %}(déjà enregistré, laisser vide pour ne pas changer){% endif %}</label>
+          <input type="password" name="password" autocomplete="new-password" placeholder="{{ '••••••••' if has_password else '' }}">
+        </div>
+        <div class="field">
+          <label>Fichier de log</label>
+          <input type="text" name="log_file" value="{{ cfg.log_file }}">
+        </div>
+        <div class="field">
+          <label>Fréquence du scan automatique (minutes)</label>
+          <input type="number" name="frequency_minutes" value="{{ cfg.frequency_minutes }}" min="1">
+        </div>
+      </div>
+
+      <div class="check">
+        <input type="checkbox" id="scheduler_enabled" name="scheduler_enabled" {{ 'checked' if cfg.scheduler_enabled }}>
+        <label for="scheduler_enabled">Lancer le scan automatiquement en continu, à la fréquence ci-dessus</label>
+      </div>
+      <div class="check">
+        <input type="checkbox" id="all_devices" name="all_devices" {{ 'checked' if cfg.all_devices }}>
+        <label for="all_devices">Considérer tous les devices (pas seulement désync) — les DOWN restent exclus</label>
+      </div>
+      <div class="check">
+        <input type="checkbox" id="insecure" name="insecure" {{ 'checked' if cfg.insecure }}>
+        <label for="insecure">Ignorer la vérification du certificat TLS (certificat auto-signé)</label>
+      </div>
+
+      <details>
+        <summary>Options avancées (timeouts)</summary>
+        <div class="grid">
+          <div class="field">
+            <label>Timeout HTTP (s)</label>
+            <input type="number" name="timeout" value="{{ cfg.timeout }}">
+          </div>
+          <div class="field">
+            <label>Intervalle de poll des tâches (s)</label>
+            <input type="number" name="poll_interval" value="{{ cfg.poll_interval }}">
+          </div>
+          <div class="field">
+            <label>Timeout par tâche de retrieve (s)</label>
+            <input type="number" name="task_timeout" value="{{ cfg.task_timeout }}">
+          </div>
+        </div>
+      </details>
+
+      <div class="btn-row">
+        <button type="submit" class="btn-primary">Enregistrer la configuration</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="panel">
+    <h2>Lancer un scan</h2>
+    <form method="post" action="{{ url_for('run_now') }}" style="display:inline">
+      <input type="hidden" name="dry_run" value="0">
+      <button type="submit" class="btn-primary">Lancer maintenant</button>
+    </form>
+    <form method="post" action="{{ url_for('run_now') }}" style="display:inline">
+      <input type="hidden" name="dry_run" value="1">
+      <button type="submit" class="btn-secondary">Tester (dry-run, ne déclenche rien)</button>
+    </form>
+    <p class="meta" id="scheduler-meta"></p>
+  </div>
+
+  <div class="panel">
+    <h2>Progression</h2>
+    <div class="status-row">
+      <span class="badge" id="phase-badge">-</span>
+      <span id="current-device" class="meta"></span>
+    </div>
+    <div class="progress-outer"><div class="progress-inner" id="progress-bar"></div></div>
+    <p class="meta" id="progress-meta"></p>
+
+    <div class="summary" id="summary"></div>
+
+    <div class="log" id="log"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Résultat détaillé</h2>
+    <div class="tbl-wrap">
+      <table id="result-table">
+        <thead><tr id="result-head"></tr></thead>
+        <tbody id="result-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+const REPORT_COLUMNS = {{ report_columns|tojson }};
+
+const head = document.getElementById('result-head');
+REPORT_COLUMNS.forEach(([label]) => {
+  const th = document.createElement('th');
+  th.textContent = label;
+  head.appendChild(th);
+});
+
+function pillSpan(text) {
+  const span = document.createElement('span');
+  span.className = 'pill ' + text;
+  span.textContent = text;
+  return span;
+}
+
+function renderTable(rows) {
+  const body = document.getElementById('result-body');
+  body.innerHTML = '';
+  rows.forEach(row => {
+    const tr = document.createElement('tr');
+    REPORT_COLUMNS.forEach(([, key]) => {
+      const td = document.createElement('td');
+      const val = row[key] ?? '-';
+      if (['status_label', 'conn_label', 'result'].includes(key) && ['DESYNC','SYNC','UP','DOWN','SUCCESS','FAILED'].includes(val)) {
+        td.appendChild(pillSpan(val));
+      } else {
+        td.textContent = val;
+      }
+      tr.appendChild(td);
+    });
+    body.appendChild(tr);
+  });
+}
+
+function renderSummary(rows) {
+  const el = document.getElementById('summary');
+  const total = rows.length;
+  const desync = rows.filter(r => r.status_label === 'DESYNC').length;
+  const retrieved = rows.filter(r => r.action === 'retrieved').length;
+  const success = rows.filter(r => r.result === 'SUCCESS').length;
+  const failed = rows.filter(r => r.result === 'FAILED').length;
+  const skipped = rows.filter(r => r.action === 'skipped').length;
+  const stats = [
+    ['Scannés', total], ['Désync', desync], ['Retrieve lancés', retrieved],
+    ['Succès', success], ['Échecs', failed], ['Ignorés', skipped],
+  ];
+  el.innerHTML = '';
+  stats.forEach(([label, n]) => {
+    const div = document.createElement('div');
+    div.className = 'stat';
+    div.innerHTML = `<div class="n">${n}</div><div class="l">${label}</div>`;
+    el.appendChild(div);
+  });
+}
+
+async function poll() {
+  try {
+    const resp = await fetch('{{ url_for("api_status") }}');
+    const s = await resp.json();
+
+    const badge = document.getElementById('phase-badge');
+    badge.className = 'badge ' + s.phase;
+    const labelMap = {idle: 'Inactif', running: 'En cours', done: 'Terminé', error: 'Erreur'};
+    badge.textContent = labelMap[s.phase] || s.phase;
+
+    document.getElementById('current-device').textContent =
+      s.current_device ? ('Traitement en cours : ' + s.current_device) : '';
+
+    const pct = s.target_total > 0 ? Math.round((s.target_done / s.target_total) * 100) : (s.phase === 'running' ? 5 : 0);
+    document.getElementById('progress-bar').style.width = pct + '%';
+
+    let meta = '';
+    if (s.started_at) meta += 'Démarré: ' + s.started_at + '  ';
+    if (s.finished_at) meta += '· Terminé: ' + s.finished_at + '  ';
+    if (s.target_total) meta += `· ${s.target_done}/${s.target_total} device(s) traité(s)`;
+    if (s.phase === 'error' && s.error) meta += '  · ' + s.error;
+    document.getElementById('progress-meta').textContent = meta;
+
+    document.getElementById('log').textContent = (s.log_lines || []).join('\n');
+    const logEl = document.getElementById('log');
+    logEl.scrollTop = logEl.scrollHeight;
+
+    renderTable(s.rows || []);
+    renderSummary(s.rows || []);
+
+    let schedMeta = s.scheduler_enabled
+      ? `Scan automatique actif, toutes les ${s.frequency_minutes} min.`
+      : 'Scan automatique désactivé.';
+    if (s.scheduler_enabled && s.next_run_at) {
+      const next = new Date(s.next_run_at * 1000);
+      schedMeta += ' Prochain scan prévu vers ' + next.toLocaleTimeString();
+    }
+    document.getElementById('scheduler-meta').textContent = schedMeta;
+  } catch (e) {
+    // network hiccup while polling: ignore, next poll will retry
+  }
+}
+
+poll();
+setInterval(poll, 1500);
+</script>
+</body>
+</html>

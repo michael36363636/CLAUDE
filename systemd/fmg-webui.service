@@ -1,0 +1,17 @@
+[Unit]
+Description=fmg-retrieve-oos web control panel
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/fmg-retrieve-oos/webui.env
+WorkingDirectory=/opt/fmg-retrieve-oos/webui
+ExecStart=/usr/bin/python3 /opt/fmg-retrieve-oos/webui/app.py
+Restart=on-failure
+RestartSec=5
+User=fmg-retrieve
+Group=fmg-retrieve
+
+[Install]
+WantedBy=multi-user.target

@@ -33,10 +33,28 @@ distance depuis un serveur Linux, ce qui correspond au besoin initial.
 - Idéalement, restreindre la source IP autorisée pour ce compte API
   (System Settings > Administrators > Trusted Hosts).
 
-## Installation
+## Structure du dépôt
+
+```
+lib/fmg_common.py       client JSON-RPC FortiManager + logique de scan, partagé par le CLI et le webui
+scripts/fmg_retrieve_oos.py   CLI (cron/systemd timer)
+webui/app.py             interface web Flask (config + lancement + suivi + planification)
+webui/templates/index.html
+systemd/                 unités systemd pour les deux modes
+config/                  fichiers d'exemple (.env)
+```
+
+Le CLI importe `lib/fmg_common.py` par chemin relatif : il faut donc garder
+la structure du dépôt intacte (ne pas déplacer juste `fmg_retrieve_oos.py`
+tout seul dans `/usr/local/bin`).
+
+## Installation (CLI)
 
 ```bash
-sudo install -m 755 scripts/fmg_retrieve_oos.py /usr/local/bin/fmg_retrieve_oos.py
+sudo mkdir -p /opt/fmg-retrieve-oos
+sudo cp -r lib scripts config systemd /opt/fmg-retrieve-oos/
+sudo chmod +x /opt/fmg-retrieve-oos/scripts/fmg_retrieve_oos.py
+
 sudo mkdir -p /etc/fmg-retrieve-oos
 sudo cp config/fmg.env.example /etc/fmg-retrieve-oos/fmg.env
 sudo vi /etc/fmg-retrieve-oos/fmg.env        # renseigner FMG_HOST / FMG_ADOM / FMG_USER
@@ -110,7 +128,12 @@ FGT-LILLE | FGT5 | 10.0.0.5 | DOWN      | DESYNC  | skipped   | -               
 
 ## Exécution périodique
 
-### systemd timer (recommandé)
+Deux options indépendantes, pas besoin des deux :
+- **CLI + systemd timer/cron** ci-dessous, si tu veux juste un job sans interface.
+- **Interface web** (section suivante) avec sa propre case "scan automatique en continu" et
+  sa fréquence en minutes, si tu veux une page pour suivre/configurer sans toucher au terminal.
+
+### systemd timer (recommandé pour le CLI)
 
 ```bash
 sudo cp systemd/fmg-retrieve-oos.service systemd/fmg-retrieve-oos.timer /etc/systemd/system/
@@ -125,13 +148,102 @@ fmg-retrieve-oos.service` ou dans `/var/log/fmg-retrieve-oos.log`.
 ### cron (alternative)
 
 ```
-*/15 * * * * fmg-retrieve  FMG_PASSWORD_FILE=/etc/fmg-retrieve-oos/fmg.passwd /usr/local/bin/fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --user api-retrieve
+*/15 * * * * fmg-retrieve  FMG_PASSWORD_FILE=/etc/fmg-retrieve-oos/fmg.passwd /opt/fmg-retrieve-oos/scripts/fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --user api-retrieve
 ```
+
+## Interface web
+
+Le serveur ciblé (Debian 12, headless, accès SSH uniquement) n'a pas de
+bureau graphique : l'interface est donc une petite page web (Flask), servie
+en local sur le serveur et consultée depuis un navigateur via un tunnel
+SSH — pas d'installation côté poste client.
+
+Elle permet de :
+- configurer host/port/ADOM/utilisateur/mot de passe FortiManager, chemin
+  du fichier de log, et les options avancées (TLS, timeouts) ;
+- lancer un scan à la demande (bouton "Lancer maintenant" ou "Tester -
+  dry-run") avec une barre de progression et un log en direct pendant que
+  ça tourne ;
+- voir le résumé (nb scannés / désync / retrieve lancés / succès / échecs)
+  et le tableau détaillé, identique à celui du CLI ;
+- activer un scan automatique en continu, en indiquant la fréquence en
+  minutes (case à cocher + champ "Fréquence").
+
+### Prérequis
+
+```bash
+sudo apt install python3-flask
+```
+
+(Flask est le seul paquet à installer en plus de Python 3, déjà présent sur
+Debian 12 — pas besoin de `pip`/`venv`.)
+
+### Installation
+
+```bash
+sudo mkdir -p /opt/fmg-retrieve-oos
+sudo cp -r lib webui /opt/fmg-retrieve-oos/
+
+sudo mkdir -p /etc/fmg-retrieve-oos
+sudo cp config/webui.env.example /etc/fmg-retrieve-oos/webui.env
+sudo vi /etc/fmg-retrieve-oos/webui.env   # WEBUI_USERNAME / WEBUI_PASSWORD (login de la page, PAS le compte FMG)
+
+sudo cp systemd/fmg-webui.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now fmg-webui.service
+```
+
+La config FortiManager (host/ADOM/user/password/log/fréquence) se
+renseigne ensuite **depuis la page elle-même**, pas dans un fichier — elle
+est stockée dans `FMG_WEBUI_CONFIG_DIR` (par défaut
+`/etc/fmg-retrieve-oos` si défini dans `webui.env`, sinon
+`~/.config/fmg-retrieve-oos` de l'utilisateur qui lance le service), avec
+le mot de passe FMG dans un fichier séparé en mode 600, comme pour le CLI.
+
+### Accès depuis ton poste
+
+Le service écoute par défaut sur `127.0.0.1:8877` **uniquement** (pas sur
+le réseau) — volontaire, vu qu'il peut déclencher des actions sur le FMG.
+Depuis ton poste :
+
+```bash
+ssh -L 8877:127.0.0.1:8877 utilisateur@debian-server
+```
+
+puis ouvrir `http://127.0.0.1:8877` dans ton navigateur. Un login/mot de
+passe (Basic Auth, ceux définis dans `webui.env`) est demandé avant tout
+accès.
+
+## Comment se fait la connexion à l'API FortiManager
+
+Le client (`lib/fmg_common.py`) parle JSON-RPC en HTTPS, comme le fait la
+GUI du FortiManager en interne :
+
+1. **Login** — `POST https://<fmg>/jsonrpc` avec
+   `{"method":"exec","params":[{"url":"/sys/login/user","data":{"user":"...","passwd":"..."}}]}`.
+   La réponse contient un `session` (token) réutilisé pour tous les appels
+   suivants — pas de "clé API" façon FortiGate, juste un compte admin avec
+   un profil JSON API activé côté FMG.
+2. **Lister les devices de l'ADOM** — `GET /dvmdb/adom/<adom>/device` avec
+   les champs `conf_status` (sync FMG<->FGT) et `conn_status` (FGT
+   joignable ou non).
+3. **Retrieve** — `EXEC /dvm/cmd/update/device` avec `adom`, `device`, et
+   `flags: ["create_task","nonblocking"]`, qui renvoie un `task` id.
+4. **Suivi de la tâche** — `GET /task/task/<id>` jusqu'à `state: done`,
+   avec le détail par device (`line[].err`/`line[].detail`) pour savoir
+   pourquoi ça a échoué le cas échéant.
+5. **Logout** — `EXEC /sys/logout`, toujours exécuté même en cas d'erreur.
 
 ## Sécurité
 
-- Compte API dédié, permissions minimales, Trusted Hosts sur le FMG.
-- Mot de passe stocké hors du script, fichier 600, jamais en argument CLI.
-- TLS vérifié par défaut ; `--insecure` n'est prévu que pour du lab avec
-  certificat auto-signé, à éviter en production.
-- Le script se déconnecte proprement (`/sys/logout`) même en cas d'erreur.
+- Compte API FortiManager dédié, permissions minimales, Trusted Hosts sur
+  le FMG.
+- Mot de passe FMG stocké hors du script/de la page, fichier 600, jamais
+  en argument CLI ni en clair dans le formulaire une fois enregistré.
+- TLS vérifié par défaut ; l'option "ignorer le certificat" n'est prévue
+  que pour du lab avec certificat auto-signé, à éviter en production.
+- Le client se déconnecte proprement (`/sys/logout`) même en cas d'erreur.
+- L'interface web a son propre login (Basic Auth, `WEBUI_USERNAME`/
+  `WEBUI_PASSWORD`), distinct du compte FortiManager, et n'écoute par
+  défaut que sur `127.0.0.1` — accès prévu via tunnel SSH, pas d'exposition
+  directe sur le réseau.
