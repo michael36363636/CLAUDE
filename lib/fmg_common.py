@@ -269,13 +269,24 @@ def classify_devices(devices, all_devices=False):
     for d in devices:
         conf_status = d.get("conf_status") or "unknown"
         conn_status = d.get("conn_status") or "unknown"
+        # FortiManager's own GUI shows "Unknown" for a device it can't
+        # currently reach, regardless of the last conf_status it had
+        # cached before going unreachable - a stale reading can't be
+        # trusted. Mirror that in the displayed STATUT (the raw
+        # conf_status is kept below for the actual retrieve-targeting
+        # logic, which already excludes DOWN devices separately).
+        status_label = (
+            "INCONNU"
+            if conn_status != "up"
+            else STATUS_LABELS.get(conf_status, f"AUTRE({conf_status})")
+        )
         rows.append(
             {
                 "name": d.get("name"),
                 "sn": d.get("sn"),
                 "ip": d.get("ip") or "-",
                 "conf_status": conf_status,
-                "status_label": STATUS_LABELS.get(conf_status, f"AUTRE({conf_status})"),
+                "status_label": status_label,
                 "conn_status": conn_status,
                 "conn_label": CONN_LABELS.get(conn_status, "INCONNU"),
                 "action": "-",
