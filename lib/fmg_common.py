@@ -260,10 +260,12 @@ def append_resync_history(log_dir, rows, trigger):
     long-term answer to "which FGT were desync and got fixed, and when".
     Unlike the per-run log files, this one is never purged/rotated by the
     tool itself: it's meant to accumulate as history. No-op if log_dir is
-    falsy or there's nothing to record."""
-    successes = [r for r in rows if r.get("result") == "SUCCESS"]
-    if not log_dir or not successes:
+    falsy. The file is created (even empty) on the very first run so
+    `cat`/`tail -f` never fails with "no such file" just because nothing
+    has needed a resync yet."""
+    if not log_dir:
         return
+    successes = [r for r in rows if r.get("result") == "SUCCESS"]
     try:
         os.makedirs(log_dir, exist_ok=True)
         with open(resync_history_path(log_dir), "a", encoding="utf-8") as fh:
