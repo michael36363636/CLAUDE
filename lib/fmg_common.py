@@ -94,6 +94,10 @@ class FmgClient:
         payload = {
             "id": self._next_id(),
             "method": method,
+            # Without "verbose", FortiManager returns enum fields like
+            # conf_status/conn_status as raw integers instead of the
+            # documented strings ("insync"/"outofsync"/"unknown"/"up"/"down").
+            "verbose": 1,
             "params": [
                 {
                     "url": url,
