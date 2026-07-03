@@ -225,10 +225,12 @@ def wait_for_task(client, task_id, poll_interval, timeout, on_poll=None):
     return task.get("state"), False, reason
 
 
-def make_run_log_path(log_dir, when=None):
-    """One timestamped log file per run, e.g. fmg-retrieve-oos_2026-07-03_14-05-00.log"""
+def make_run_log_path(log_dir, when=None, trigger=None):
+    """One timestamped log file per run, e.g.
+    fmg-retrieve-oos_manual_2026-07-03_14-05-00.log"""
     ts = time.strftime("%Y-%m-%d_%H-%M-%S", when or time.localtime())
-    return os.path.join(log_dir, f"{LOG_FILENAME_PREFIX}_{ts}.log")
+    tag = f"_{trigger}" if trigger else ""
+    return os.path.join(log_dir, f"{LOG_FILENAME_PREFIX}{tag}_{ts}.log")
 
 
 def purge_old_logs(log_dir, retention_days):
@@ -243,6 +245,36 @@ def purge_old_logs(log_dir, retention_days):
                 os.remove(path)
         except OSError:
             pass
+
+
+RESYNC_HISTORY_FILENAME = "resync-history.log"
+
+
+def resync_history_path(log_dir):
+    return os.path.join(log_dir, RESYNC_HISTORY_FILENAME)
+
+
+def append_resync_history(log_dir, rows, trigger):
+    """Append one line per device that was out-of-sync and got successfully
+    resynced (result == SUCCESS) to a single cumulative audit file - the
+    long-term answer to "which FGT were desync and got fixed, and when".
+    Unlike the per-run log files, this one is never purged/rotated by the
+    tool itself: it's meant to accumulate as history. No-op if log_dir is
+    falsy or there's nothing to record."""
+    successes = [r for r in rows if r.get("result") == "SUCCESS"]
+    if not log_dir or not successes:
+        return
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        with open(resync_history_path(log_dir), "a", encoding="utf-8") as fh:
+            for r in successes:
+                ts = time.strftime("%Y-%m-%d %H:%M:%S")
+                fh.write(
+                    f"{ts} | {trigger} | {r.get('name')} | {r.get('sn', '-')} | "
+                    f"{r.get('ip', '-')} | resync OK\n"
+                )
+    except OSError:
+        pass
 
 
 def format_report_table(rows):

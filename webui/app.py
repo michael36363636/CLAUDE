@@ -30,6 +30,7 @@ from fmg_common import (  # noqa: E402
     DEFAULT_LOG_RETENTION_DAYS,
     FmgApiError,
     REPORT_COLUMNS,
+    append_resync_history,
     format_report_table,
     make_run_log_path,
     purge_old_logs,
@@ -252,6 +253,8 @@ def _run_worker(cfg, password, api_key, trigger, dry_run):
             if log_fh:
                 log_fh.write("\n" + format_report_table(rows) + "\n")
                 log_fh.flush()
+        if not dry_run:
+            append_resync_history(cfg.get("log_dir"), rows, trigger)
     except FmgApiError as exc:
         with lock:
             state["phase"] = "error"

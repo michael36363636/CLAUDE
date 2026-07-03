@@ -64,28 +64,6 @@ EOF
     printf '%s' "$FMG_API_KEY" > "$CONFIG_DIR/fmg.apikey"
     chmod 600 "$CONFIG_DIR/fmg.apikey"
     unset FMG_API_KEY
-
-    {
-      echo "[Unit]"
-      echo "Description=Retrieve config from out-of-sync FortiGates via FortiManager API"
-      echo "Wants=network-online.target"
-      echo "After=network-online.target"
-      echo
-      echo "[Service]"
-      echo "Type=oneshot"
-      echo "EnvironmentFile=$CONFIG_DIR/fmg.env"
-      echo "ExecStart=$REPO_DIR/scripts/fmg_retrieve_oos.py \\"
-      echo "    --host \${FMG_HOST} \\"
-      echo "    --adom \${FMG_ADOM} \\"
-      echo "    --api-key-file $CONFIG_DIR/fmg.apikey \\"
-      if [ -n "$INSECURE_LINE" ]; then
-        echo "    --log-dir $LOG_DIR \\"
-        echo "$INSECURE_LINE"
-      else
-        echo "    --log-dir $LOG_DIR"
-      fi
-    } > "$SYSTEMD_DIR/fmg-retrieve-oos.service"
-
     TEST_CMD="sudo env FMG_API_KEY_FILE=$CONFIG_DIR/fmg.apikey \\
     $REPO_DIR/scripts/fmg_retrieve_oos.py --host $FMG_HOST --adom $FMG_ADOM --dry-run$DRY_RUN_INSECURE_FLAG"
   else
@@ -96,10 +74,19 @@ EOF
     printf '%s' "$FMG_PASS" > "$CONFIG_DIR/fmg.passwd"
     chmod 600 "$CONFIG_DIR/fmg.passwd"
     unset FMG_PASS
+    TEST_CMD="sudo env FMG_PASSWORD_FILE=$CONFIG_DIR/fmg.passwd \\
+    $REPO_DIR/scripts/fmg_retrieve_oos.py --host $FMG_HOST --adom $FMG_ADOM --user $FMG_USER --dry-run$DRY_RUN_INSECURE_FLAG"
+  fi
+  chmod 600 "$CONFIG_DIR/fmg.env"
 
+  # Two separate units so "last run" can be told apart: one driven by the
+  # timer (trigger=scheduler), one for on-demand runs (trigger=manual).
+  # systemctl status/journalctl on each shows only its own history.
+  write_cli_unit() {
+    local out_file="$1" trigger="$2" description="$3"
     {
       echo "[Unit]"
-      echo "Description=Retrieve config from out-of-sync FortiGates via FortiManager API"
+      echo "Description=$description"
       echo "Wants=network-online.target"
       echo "After=network-online.target"
       echo
@@ -109,21 +96,24 @@ EOF
       echo "ExecStart=$REPO_DIR/scripts/fmg_retrieve_oos.py \\"
       echo "    --host \${FMG_HOST} \\"
       echo "    --adom \${FMG_ADOM} \\"
-      echo "    --user \${FMG_USER} \\"
-      echo "    --password-file $CONFIG_DIR/fmg.passwd \\"
-      if [ -n "$INSECURE_LINE" ]; then
-        echo "    --log-dir $LOG_DIR \\"
-        echo "$INSECURE_LINE"
+      if [ "$FMG_AUTH_MODE" = "2" ]; then
+        echo "    --api-key-file $CONFIG_DIR/fmg.apikey \\"
       else
-        echo "    --log-dir $LOG_DIR"
+        echo "    --user \${FMG_USER} \\"
+        echo "    --password-file $CONFIG_DIR/fmg.passwd \\"
       fi
-    } > "$SYSTEMD_DIR/fmg-retrieve-oos.service"
+      echo "    --log-dir $LOG_DIR \\"
+      if [ -n "$INSECURE_LINE" ]; then
+        echo "$INSECURE_LINE \\"
+      fi
+      echo "    --trigger $trigger"
+    } > "$out_file"
+  }
 
-    TEST_CMD="sudo env FMG_PASSWORD_FILE=$CONFIG_DIR/fmg.passwd \\
-    $REPO_DIR/scripts/fmg_retrieve_oos.py --host $FMG_HOST --adom $FMG_ADOM --user $FMG_USER --dry-run$DRY_RUN_INSECURE_FLAG"
-  fi
-
-  chmod 600 "$CONFIG_DIR/fmg.env"
+  write_cli_unit "$SYSTEMD_DIR/fmg-retrieve-oos.service" "scheduler" \
+    "Retrieve config from out-of-sync FortiGates via FortiManager API"
+  write_cli_unit "$SYSTEMD_DIR/fmg-retrieve-oos-manual.service" "manual" \
+    "Retrieve config from out-of-sync FortiGates via FortiManager API (manual run)"
   cp "$REPO_DIR/systemd/fmg-retrieve-oos.timer" "$SYSTEMD_DIR/fmg-retrieve-oos.timer"
 
   systemctl daemon-reload
@@ -132,8 +122,10 @@ EOF
   echo
   echo "CLI installé. Test immédiat (dry-run, ne déclenche rien) :"
   echo "  $TEST_CMD"
-  echo "Scan à la demande (déclenche un vrai run) : sudo systemctl start fmg-retrieve-oos.service"
+  echo "Scan à la demande (déclenche un vrai run) : sudo systemctl start fmg-retrieve-oos-manual.service"
   echo "Scan périodique actif toutes les 15 min (systemctl status fmg-retrieve-oos.timer)."
+  echo "Dernier scan planifié : systemctl status fmg-retrieve-oos.service"
+  echo "Dernier scan manuel   : systemctl status fmg-retrieve-oos-manual.service"
 fi
 
 # ---- Web UI setup -------------------------------------------------------

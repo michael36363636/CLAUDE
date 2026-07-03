@@ -51,6 +51,7 @@ from fmg_common import (  # noqa: E402
     DEFAULT_LOG_DIR,
     DEFAULT_LOG_RETENTION_DAYS,
     FmgApiError,
+    append_resync_history,
     format_report_table,
     make_run_log_path,
     purge_old_logs,
@@ -140,6 +141,14 @@ def build_arg_parser():
         help=f"Delete previous run log files older than this many days at the "
         f"start of each run (default: {DEFAULT_LOG_RETENTION_DAYS}). 0 disables purging.",
     )
+    p.add_argument(
+        "--trigger",
+        choices=["manual", "scheduler"],
+        default="manual",
+        help="Purely informational: tags the log line and per-run log filename so "
+        "'last manual run' and 'last scheduled run' can be told apart (e.g. when "
+        "manual and timer-triggered runs use separate systemd units).",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -157,11 +166,11 @@ def setup_logging(args):
         try:
             os.makedirs(args.log_dir, exist_ok=True)
             purge_old_logs(args.log_dir, args.log_retention_days)
-            log_path = make_run_log_path(args.log_dir)
+            log_path = make_run_log_path(args.log_dir, trigger=args.trigger)
             fh = logging.FileHandler(log_path)
             fh.setFormatter(fmt)
             log.addHandler(fh)
-            log.info("Log de ce run: %s", log_path)
+            log.info("Log de ce run (%s): %s", args.trigger, log_path)
         except OSError as exc:
             log.warning(
                 "cannot write to log dir '%s' (%s); continuing with stdout only",
@@ -216,6 +225,8 @@ def main():
             )
             return 3
 
+    log.info("Démarrage du scan (%s) sur %s / ADOM %s", args.trigger, args.host, args.adom)
+
     try:
         rows, exit_code = run_scan(
             host=args.host,
@@ -239,6 +250,8 @@ def main():
 
     if args.dry_run:
         log.info("Dry-run: no retrieve triggered.")
+    elif args.log_dir:
+        append_resync_history(args.log_dir, rows, args.trigger)
 
     return exit_code
 

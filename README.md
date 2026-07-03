@@ -124,7 +124,8 @@ Codes de sortie : `0` = OK, `1` = au moins un retrieve en échec/timeout,
 
 **Un fichier par run** : chaque exécution écrit son propre fichier
 horodaté dans `--log-dir` (défaut `/var/log/fmg-retrieve-oos`), nommé
-`fmg-retrieve-oos_AAAA-MM-JJ_HH-MM-SS.log` — pas de fichier unique qui
+`fmg-retrieve-oos_<trigger>_AAAA-MM-JJ_HH-MM-SS.log` (`<trigger>` =
+`manual` ou `scheduler`, voir plus bas) — pas de fichier unique qui
 grossit indéfiniment. Le nom du fichier créé est aussi affiché en première
 ligne du log (utile pour le retrouver depuis `journalctl`). Idem côté
 sortie stdout, donc visible dans `journalctl -u fmg-retrieve-oos.service`
@@ -133,10 +134,12 @@ si lancé via le timer systemd. Change de dossier avec `--log-dir
 le dossier n'est pas accessible en écriture, le script log un warning et
 continue sur stdout seul plutôt que d'échouer.
 
-**Rétention** : à chaque run, les anciens fichiers de plus de
-`--log-retention-days` jours (défaut 30) sont automatiquement supprimés du
-dossier de log, pour éviter que ça grossisse indéfiniment avec un scan
-fréquent. `--log-retention-days 0` désactive la purge.
+**Rétention** : à chaque run, les anciens fichiers de run (`fmg-retrieve-oos_*.log`)
+de plus de `--log-retention-days` jours (défaut 30) sont automatiquement
+supprimés du dossier de log, pour éviter que ça grossisse indéfiniment
+avec un scan fréquent. `--log-retention-days 0` désactive la purge. Le
+fichier d'historique des resync (ci-dessous) n'est jamais purgé par le
+script — c'est volontaire, voir plus bas.
 
 Les fichiers sont du texte UTF-8 brut, lisibles avec n'importe quel outil
 (`cat`, `less -S` pour éviter le retour à la ligne sur le tableau large,
@@ -153,17 +156,79 @@ FGT-PARIS | FGT1 | 10.0.0.1 | UP        | DESYNC  | retrieved | 2026-07-03 12:55
 FGT-LYON  | FGT2 | 10.0.0.2 | UP        | SYNC    | skipped   | -                   | -        | conf_status=insync (pas de retrieve)
 FGT-NICE  | FGT3 | 10.0.0.3 | INCONNU   | INCONNU | skipped   | -                   | -        | conf_status=unknown (pas de retrieve)
 FGT-METZ  | FGT4 | 10.0.0.4 | UP        | DESYNC  | retrieved | 2026-07-03 12:55:32 | FAILED   | device unreachable
-FGT-LILLE | FGT5 | 10.0.0.5 | DOWN      | DESYNC  | skipped   | -                   | -        | conn_status=down (FGT injoignable, retrieve non déclenché)
+FGT-LILLE | FGT5 | 10.0.0.5 | DOWN      | INCONNU | skipped   | -                   | -        | conn_status=down (FGT injoignable, retrieve non déclenché)
 ```
 
 - Seuls les FGT `DESYNC` (`conf_status=outofsync`) **et** `CONNEXION=UP`
-  sont retrieve. `SYNC`/`INCONNU` (conf_status) et `DOWN`/`INCONNU`
-  (connectivité FGT<->FMG) sont toujours listés dans le tableau mais jamais
-  traités, même avec `--all` pour la connectivité.
+  sont retrieve. `SYNC` et `INCONNU` sont toujours listés dans le tableau
+  mais jamais traités, même avec `--all`. Un FGT `DOWN` s'affiche toujours
+  en `STATUT=INCONNU`, même si son dernier `conf_status` connu était
+  `outofsync` — comme dans la GUI FortiManager, on ne fait pas confiance à
+  un statut de sync qu'on ne peut plus vérifier tant que le device est
+  injoignable.
 - `HEURE` = heure de déclenchement du retrieve.
 - `RESULTAT`/`RAISON` viennent du détail de la tâche FortiManager
   (`/task/task/<id>`), donc reflètent le vrai message d'erreur API en cas
   d'échec (device injoignable en cours de tâche, timeout, etc.).
+
+### Historique des resync (suivi dans le temps)
+
+En plus des fichiers par run, un fichier **cumulatif** est tenu à jour
+dans le même dossier : `resync-history.log`. Il ne contient qu'une ligne
+par FortiGate qui **était désynchronisé et a été resynchronisé avec
+succès**, avec la date/heure et si c'était un run manuel ou planifié :
+
+```
+2026-07-03 12:55:32 | manual    | FGT-PARIS | FGT1 | 10.0.0.1 | resync OK
+2026-07-03 13:10:03 | scheduler | FGT-METZ  | FGT4 | 10.0.0.4 | resync OK
+```
+
+Contrairement aux fichiers par run, celui-ci **n'est jamais purgé**
+automatiquement — c'est l'historique long terme à garder. Commandes utiles :
+
+```bash
+# Voir tout l'historique
+cat /var/log/fmg-retrieve-oos/resync-history.log
+
+# Suivre en direct
+tail -f /var/log/fmg-retrieve-oos/resync-history.log
+
+# Un FGT en particulier revient souvent en désync ? (signe d'un vrai
+# problème de config récurrent, pas juste un aléa ponctuel)
+grep FGT-PARIS /var/log/fmg-retrieve-oos/resync-history.log | wc -l
+
+# Combien de resync cette semaine
+grep -c "" /var/log/fmg-retrieve-oos/resync-history.log
+```
+
+Si le fichier devient volumineux à terme, une rotation externe classique
+(`logrotate`) peut être ajoutée séparément - le script n'y touche pas lui-même.
+
+### Manuel vs planifié : deux services distincts
+
+`fmg-retrieve-oos.service` (déclenché par le timer) et
+`fmg-retrieve-oos-manual.service` (à lancer à la main) sont deux unités
+systemd séparées mais utilisent la même config - c'est uniquement pour
+que `systemctl status`/`journalctl` sur l'une ne mélange pas l'historique
+avec l'autre :
+
+```bash
+# Lancer un scan à la demande
+sudo systemctl start fmg-retrieve-oos-manual.service
+
+# Dernier run planifié (heure, succès/échec)
+systemctl status fmg-retrieve-oos.service
+
+# Dernier run manuel
+systemctl status fmg-retrieve-oos-manual.service
+
+# Prochain run planifié
+systemctl list-timers fmg-retrieve-oos.timer
+
+# Logs de l'un ou l'autre séparément
+journalctl -u fmg-retrieve-oos.service -n 50 --no-pager
+journalctl -u fmg-retrieve-oos-manual.service -n 50 --no-pager
+```
 
 ## Exécution périodique
 
@@ -175,15 +240,19 @@ Deux options indépendantes, pas besoin des deux :
 ### systemd timer (recommandé pour le CLI)
 
 ```bash
-sudo cp systemd/fmg-retrieve-oos.service systemd/fmg-retrieve-oos.timer /etc/systemd/system/
+sudo cp systemd/fmg-retrieve-oos.service systemd/fmg-retrieve-oos-manual.service systemd/fmg-retrieve-oos.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now fmg-retrieve-oos.timer
 ```
 
-L'intervalle par défaut est 15 minutes (`OnCalendar=*:0/15` dans le
-`.timer`), à ajuster. Logs consultables via `journalctl -u
-fmg-retrieve-oos.service`, ou fichier par fichier dans
-`/var/log/fmg-retrieve-oos/` (un par run, purgés après 30 jours).
+`fmg-retrieve-oos.service` est piloté par le timer (runs planifiés) ;
+`fmg-retrieve-oos-manual.service` sert aux runs à la demande
+(`systemctl start fmg-retrieve-oos-manual.service`) — voir "Manuel vs
+planifié" plus haut pour pourquoi deux unités séparées. L'intervalle par
+défaut est 15 minutes (`OnCalendar=*:0/15` dans le `.timer`), à ajuster.
+Logs consultables via `journalctl -u fmg-retrieve-oos.service`, ou fichier
+par fichier dans `/var/log/fmg-retrieve-oos/` (un par run, purgés après 30
+jours ; `resync-history.log` à part, jamais purgé).
 
 ### cron (alternative)
 

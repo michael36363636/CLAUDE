@@ -1,5 +1,5 @@
 [Unit]
-Description=Retrieve config from out-of-sync FortiGates via FortiManager API
+Description=Retrieve config from out-of-sync FortiGates via FortiManager API (manual run)
 Wants=network-online.target
 After=network-online.target
 
@@ -12,6 +12,6 @@ ExecStart=/opt/fmg-retrieve-oos/scripts/fmg_retrieve_oos.py \
     --user ${FMG_USER} \
     --password-file /etc/fmg-retrieve-oos/fmg.passwd \
     --log-dir /var/log/fmg-retrieve-oos \
-    --trigger scheduler
+    --trigger manual
 User=fmg-retrieve
 Group=fmg-retrieve
