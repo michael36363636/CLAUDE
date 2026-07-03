@@ -63,6 +63,13 @@ STATUS_LABELS = {
     "unknown": "INCONNU",
 }
 
+CONN_LABELS = {
+    "up": "UP",
+    "down": "DOWN",
+}
+
+DEFAULT_LOG_FILE = "/var/log/fmg-retrieve-oos.log"
+
 
 class FmgApiError(Exception):
     pass
@@ -224,6 +231,7 @@ REPORT_COLUMNS = [
     ("NAME", "name"),
     ("SN", "sn"),
     ("IP", "ip"),
+    ("CONNEXION", "conn_label"),
     ("STATUT", "status_label"),
     ("ACTION", "action"),
     ("HEURE", "triggered_at"),
@@ -292,7 +300,12 @@ def build_arg_parser():
         action="store_true",
         help="Skip TLS certificate verification (lab use only, avoid in production)",
     )
-    p.add_argument("--log-file", help="Optional log file path (in addition to stdout)")
+    p.add_argument(
+        "--log-file",
+        default=DEFAULT_LOG_FILE,
+        help=f"Log file path, in addition to stdout (default: {DEFAULT_LOG_FILE}). "
+        "Pass an empty string to disable file logging.",
+    )
     p.add_argument("-v", "--verbose", action="store_true")
     return p
 
@@ -307,9 +320,15 @@ def setup_logging(args):
     log.addHandler(console)
 
     if args.log_file:
-        fh = logging.FileHandler(args.log_file)
-        fh.setFormatter(fmt)
-        log.addHandler(fh)
+        try:
+            fh = logging.FileHandler(args.log_file)
+            fh.setFormatter(fmt)
+            log.addHandler(fh)
+        except OSError as exc:
+            log.warning(
+                "cannot write to log file '%s' (%s); continuing with stdout only",
+                args.log_file, exc,
+            )
 
     return log
 
@@ -346,6 +365,7 @@ def main():
         rows = []
         for d in devices:
             conf_status = d.get("conf_status") or "unknown"
+            conn_status = d.get("conn_status") or "unknown"
             rows.append(
                 {
                     "name": d.get("name"),
@@ -353,6 +373,8 @@ def main():
                     "ip": d.get("ip") or "-",
                     "conf_status": conf_status,
                     "status_label": STATUS_LABELS.get(conf_status, f"AUTRE({conf_status})"),
+                    "conn_status": conn_status,
+                    "conn_label": CONN_LABELS.get(conn_status, "INCONNU"),
                     "action": "-",
                     "triggered_at": "-",
                     "result": "-",
@@ -361,19 +383,29 @@ def main():
             )
 
         if args.all:
-            target_rows = rows
-            for r in target_rows:
-                if r["conf_status"] != OUT_OF_SYNC_STATUS:
-                    r["reason"] = "forcé par --all"
+            candidate_rows = rows
         else:
-            target_rows = [r for r in rows if r["conf_status"] == OUT_OF_SYNC_STATUS]
+            candidate_rows = [r for r in rows if r["conf_status"] == OUT_OF_SYNC_STATUS]
             for r in rows:
                 if r["conf_status"] != OUT_OF_SYNC_STATUS:
                     r["action"] = "skipped"
                     r["reason"] = f"conf_status={r['conf_status']} (pas de retrieve)"
 
+        # A device that is DOWN (no connectivity between the FGT and the
+        # FMG) is never retrieved, even under --all: the call would just
+        # fail, and it would falsely look like an FMG-side error.
+        target_rows = []
+        for r in candidate_rows:
+            if r["conn_status"] != "up":
+                r["action"] = "skipped"
+                r["reason"] = f"conn_status={r['conn_status']} (FGT injoignable, retrieve non déclenché)"
+                continue
+            target_rows.append(r)
+            if args.all and r["conf_status"] != OUT_OF_SYNC_STATUS:
+                r["reason"] = "forcé par --all"
+
         if not target_rows:
-            log.info("No out-of-sync devices detected in ADOM '%s'.", args.adom)
+            log.info("No device to retrieve in ADOM '%s' (none out-of-sync and reachable).", args.adom)
             log_report_table(rows, log)
             return 0
 

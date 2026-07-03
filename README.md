@@ -44,6 +44,10 @@ sudo vi /etc/fmg-retrieve-oos/fmg.env        # renseigner FMG_HOST / FMG_ADOM / 
 echo -n 'le-mot-de-passe' | sudo tee /etc/fmg-retrieve-oos/fmg.passwd >/dev/null
 sudo chmod 600 /etc/fmg-retrieve-oos/fmg.passwd
 sudo chown fmg-retrieve:fmg-retrieve /etc/fmg-retrieve-oos/fmg.passwd
+
+# fichier de log par défaut : à créer avec les droits de l'utilisateur qui lance le script
+sudo touch /var/log/fmg-retrieve-oos.log
+sudo chown fmg-retrieve:fmg-retrieve /var/log/fmg-retrieve-oos.log
 ```
 
 Le mot de passe n'est **jamais** passé en argument CLI (visible dans `ps`),
@@ -56,9 +60,9 @@ uniquement via `--password-file`, `FMG_PASSWORD_FILE` ou `FMG_PASSWORD`.
 FMG_PASSWORD_FILE=/etc/fmg-retrieve-oos/fmg.passwd \
   ./scripts/fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --user api-retrieve --dry-run
 
-# Retrieve réel des seuls devices désynchronisés (attend la fin de chaque tâche par défaut)
+# Retrieve réel des seuls devices désynchronisés et joignables (attend la fin de chaque tâche par défaut)
 FMG_PASSWORD_FILE=/etc/fmg-retrieve-oos/fmg.passwd \
-  ./scripts/fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --user api-retrieve --log-file /var/log/fmg-retrieve-oos.log
+  ./scripts/fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --user api-retrieve
 
 # Fire-and-forget : déclenche les retrieves sans attendre la fin des tâches
 ./scripts/fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --user api-retrieve --no-wait
@@ -72,24 +76,37 @@ Codes de sortie : `0` = OK, `1` = au moins un retrieve en échec/timeout,
 
 ### Rapport / log
 
+**Emplacement du fichier de log** : par défaut `/var/log/fmg-retrieve-oos.log`
+(constante `DEFAULT_LOG_FILE` en tête du script), en plus de la sortie
+stdout (donc aussi visible dans `journalctl -u fmg-retrieve-oos.service`
+si lancé via le timer systemd). Change avec `--log-file /autre/chemin.log`,
+ou désactive l'écriture fichier avec `--log-file ""`. Si le chemin n'est
+pas inscriptible (droits insuffisants), le script log un warning et continue
+sur stdout seul plutôt que d'échouer — pense à créer
+`/var/log/fmg-retrieve-oos.log` avec les bons droits pour l'utilisateur qui
+exécute le script (voir `chown`/`touch` dans la section systemd ci-dessous).
+
 Chaque exécution termine par un tableau récapitulatif (dans stdout et dans
-`--log-file` s'il est fourni) :
+le fichier de log) :
 
 ```
-NAME      | SN   | IP       | STATUT  | ACTION    | HEURE               | RESULTAT | RAISON
-----------+------+----------+---------+-----------+---------------------+----------+--------------------
-FGT-PARIS | FGT1 | 10.0.0.1 | DESYNC  | retrieved | 2026-07-03 12:52:31 | SUCCESS  | Retrieve succeeded
-FGT-LYON  | FGT2 | 10.0.0.2 | SYNC    | skipped   | -                   | -        | conf_status=insync (pas de retrieve)
-FGT-NICE  | FGT3 | 10.0.0.3 | INCONNU | skipped   | -                   | -        | conf_status=unknown (pas de retrieve)
-FGT-METZ  | FGT4 | 10.0.0.4 | DESYNC  | retrieved | 2026-07-03 12:52:31 | FAILED   | device unreachable
+NAME      | SN   | IP       | CONNEXION | STATUT  | ACTION    | HEURE               | RESULTAT | RAISON
+----------+------+----------+-----------+---------+-----------+---------------------+----------+-----------------------------------------------------------
+FGT-PARIS | FGT1 | 10.0.0.1 | UP        | DESYNC  | retrieved | 2026-07-03 12:55:32 | SUCCESS  | Retrieve succeeded
+FGT-LYON  | FGT2 | 10.0.0.2 | UP        | SYNC    | skipped   | -                   | -        | conf_status=insync (pas de retrieve)
+FGT-NICE  | FGT3 | 10.0.0.3 | INCONNU   | INCONNU | skipped   | -                   | -        | conf_status=unknown (pas de retrieve)
+FGT-METZ  | FGT4 | 10.0.0.4 | UP        | DESYNC  | retrieved | 2026-07-03 12:55:32 | FAILED   | device unreachable
+FGT-LILLE | FGT5 | 10.0.0.5 | DOWN      | DESYNC  | skipped   | -                   | -        | conn_status=down (FGT injoignable, retrieve non déclenché)
 ```
 
-- Seuls les FGT `DESYNC` (`conf_status=outofsync`) sont retrieve — `SYNC` et
-  `INCONNU`/autres statuts sont listés mais jamais touchés (sauf `--all`).
+- Seuls les FGT `DESYNC` (`conf_status=outofsync`) **et** `CONNEXION=UP`
+  sont retrieve. `SYNC`/`INCONNU` (conf_status) et `DOWN`/`INCONNU`
+  (connectivité FGT<->FMG) sont toujours listés dans le tableau mais jamais
+  traités, même avec `--all` pour la connectivité.
 - `HEURE` = heure de déclenchement du retrieve.
 - `RESULTAT`/`RAISON` viennent du détail de la tâche FortiManager
   (`/task/task/<id>`), donc reflètent le vrai message d'erreur API en cas
-  d'échec (device injoignable, timeout, etc.).
+  d'échec (device injoignable en cours de tâche, timeout, etc.).
 
 ## Exécution périodique
 
@@ -108,7 +125,7 @@ fmg-retrieve-oos.service` ou dans `/var/log/fmg-retrieve-oos.log`.
 ### cron (alternative)
 
 ```
-*/15 * * * * fmg-retrieve  FMG_PASSWORD_FILE=/etc/fmg-retrieve-oos/fmg.passwd /usr/local/bin/fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --user api-retrieve --wait --log-file /var/log/fmg-retrieve-oos.log
+*/15 * * * * fmg-retrieve  FMG_PASSWORD_FILE=/etc/fmg-retrieve-oos/fmg.passwd /usr/local/bin/fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --user api-retrieve
 ```
 
 ## Sécurité
