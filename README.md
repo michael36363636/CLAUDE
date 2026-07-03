@@ -48,7 +48,22 @@ Le CLI importe `lib/fmg_common.py` par chemin relatif : il faut donc garder
 la structure du dépôt intacte (ne pas déplacer juste `fmg_retrieve_oos.py`
 tout seul dans `/usr/local/bin`).
 
-## Installation (CLI)
+## Démarrage rapide (recommandé)
+
+Après avoir cloné le dépôt sur le serveur :
+
+```bash
+cd fmg-retrieve-oos   # ou le nom du dossier cloné
+sudo ./scripts/install.sh
+```
+
+Le script pose quelques questions (CLI seul / interface web / les deux,
+host FortiManager, ADOM, compte API, login de la page web...) et fait le
+reste : dossiers de config, fichier de mot de passe en 600, unités
+systemd, activation. Pas besoin de suivre les étapes manuelles ci-dessous
+sauf si tu veux comprendre/adapter le détail de chaque fichier.
+
+## Installation manuelle (CLI)
 
 ```bash
 sudo mkdir -p /opt/fmg-retrieve-oos
@@ -190,7 +205,10 @@ sudo apt install python3-flask
 (Flask est le seul paquet à installer en plus de Python 3, déjà présent sur
 Debian 12 — pas besoin de `pip`/`venv`.)
 
-### Installation
+### Installation manuelle
+
+(`sudo ./scripts/install.sh` fait tout ça automatiquement — voir "Démarrage
+rapide" plus haut. Détail ci-dessous pour comprendre/adapter.)
 
 ```bash
 sudo mkdir -p /opt/fmg-retrieve-oos
