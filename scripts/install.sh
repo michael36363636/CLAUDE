@@ -41,6 +41,7 @@ if [ "$MODE" = "1" ] || [ "$MODE" = "3" ]; then
   read -rp "Utilisateur API FortiManager : " FMG_USER
   read -rsp "Mot de passe de ce compte API : " FMG_PASS
   echo
+  read -rp "Certificat TLS auto-signé sur ce FortiManager (ignorer la vérification) ? [o/N] : " FMG_INSECURE_ANSWER
 
   cat > "$CONFIG_DIR/fmg.env" <<EOF
 FMG_HOST=$FMG_HOST
@@ -54,8 +55,34 @@ EOF
 
   chmod +x "$REPO_DIR/scripts/fmg_retrieve_oos.py"
 
-  sed -e "s#/opt/fmg-retrieve-oos#$REPO_DIR#g" -e "/^User=/d" -e "/^Group=/d" \
-    "$REPO_DIR/systemd/fmg-retrieve-oos.service" > "$SYSTEMD_DIR/fmg-retrieve-oos.service"
+  INSECURE_LINE=""
+  DRY_RUN_INSECURE_FLAG=""
+  if [[ "$FMG_INSECURE_ANSWER" =~ ^[oOyY] ]]; then
+    INSECURE_LINE="    --insecure"
+    DRY_RUN_INSECURE_FLAG=" --insecure"
+  fi
+
+  {
+    echo "[Unit]"
+    echo "Description=Retrieve config from out-of-sync FortiGates via FortiManager API"
+    echo "Wants=network-online.target"
+    echo "After=network-online.target"
+    echo
+    echo "[Service]"
+    echo "Type=oneshot"
+    echo "EnvironmentFile=$CONFIG_DIR/fmg.env"
+    echo "ExecStart=$REPO_DIR/scripts/fmg_retrieve_oos.py \\"
+    echo "    --host \${FMG_HOST} \\"
+    echo "    --adom \${FMG_ADOM} \\"
+    echo "    --user \${FMG_USER} \\"
+    echo "    --password-file $CONFIG_DIR/fmg.passwd \\"
+    if [ -n "$INSECURE_LINE" ]; then
+      echo "    --log-dir $LOG_DIR \\"
+      echo "$INSECURE_LINE"
+    else
+      echo "    --log-dir $LOG_DIR"
+    fi
+  } > "$SYSTEMD_DIR/fmg-retrieve-oos.service"
   cp "$REPO_DIR/systemd/fmg-retrieve-oos.timer" "$SYSTEMD_DIR/fmg-retrieve-oos.timer"
 
   systemctl daemon-reload
@@ -64,7 +91,8 @@ EOF
   echo
   echo "CLI installé. Test immédiat (dry-run, ne déclenche rien) :"
   echo "  sudo env FMG_PASSWORD_FILE=$CONFIG_DIR/fmg.passwd \\"
-  echo "    $REPO_DIR/scripts/fmg_retrieve_oos.py --host $FMG_HOST --adom $FMG_ADOM --user $FMG_USER --dry-run"
+  echo "    $REPO_DIR/scripts/fmg_retrieve_oos.py --host $FMG_HOST --adom $FMG_ADOM --user $FMG_USER --dry-run$DRY_RUN_INSECURE_FLAG"
+  echo "Scan à la demande (déclenche un vrai run) : sudo systemctl start fmg-retrieve-oos.service"
   echo "Scan périodique actif toutes les 15 min (systemctl status fmg-retrieve-oos.timer)."
 fi
 
