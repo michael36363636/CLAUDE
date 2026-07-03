@@ -1,0 +1,16 @@
+[Unit]
+Description=Retrieve config from out-of-sync FortiGates via FortiManager API
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/fmg-retrieve-oos/fmg.env
+ExecStart=/usr/local/bin/fmg_retrieve_oos.py \
+    --host ${FMG_HOST} \
+    --adom ${FMG_ADOM} \
+    --user ${FMG_USER} \
+    --password-file /etc/fmg-retrieve-oos/fmg.passwd \
+    --log-file /var/log/fmg-retrieve-oos.log
+User=fmg-retrieve
+Group=fmg-retrieve

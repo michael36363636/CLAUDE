@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic run of fmg-retrieve-oos.service
+
+[Timer]
+# Runs every 15 minutes. Adjust to taste.
+OnCalendar=*:0/15
+RandomizedDelaySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target
