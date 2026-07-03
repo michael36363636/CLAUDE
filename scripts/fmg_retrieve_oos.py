@@ -4,10 +4,16 @@ fmg_retrieve_oos.py
 
 Runs FROM a Linux server (cron / systemd timer) against the FortiManager
 JSON-RPC API. Scans the FortiGates registered in a given (backup) ADOM and,
-for every device whose config is out-of-sync (conf_status == "outofsync"),
-triggers a "Retrieve Config" (device -> FortiManager), i.e. the API
-equivalent of "diagnose test deploymanager reloadconf <oid>", but done
-properly over HTTPS/JSON-RPC instead of an SSH CLI scrape.
+for every device whose config is out-of-sync (conf_status == "outofsync"
+*exactly* - "unknown" and any other status are left untouched), triggers a
+"Retrieve Config" (device -> FortiManager), i.e. the API equivalent of
+"diagnose test deploymanager reloadconf <oid>", but done properly over
+HTTPS/JSON-RPC instead of an SSH CLI scrape.
+
+Every run writes a clear report to the log (and to --log-file if given):
+a table listing every device in the ADOM with its sync status, whether a
+retrieve was triggered (and at what time), and the outcome (success/failed
++ reason).
 
 No third-party dependencies: only the Python standard library is used, so
 it can be dropped on any Linux host with Python 3.6+.
@@ -16,7 +22,7 @@ Usage:
     fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --user api-retrieve
     fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --user api-retrieve --dry-run
     fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --user api-retrieve --all
-    fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --user api-retrieve --wait
+    fmg_retrieve_oos.py --host fmg.example.com --adom BACKUP --user api-retrieve --no-wait
 
 Credentials:
     The password is NEVER passed on the command line. Provide it via:
@@ -45,7 +51,17 @@ DEFAULT_TIMEOUT = 30
 DEFAULT_TASK_POLL_INTERVAL = 5
 DEFAULT_TASK_TIMEOUT = 600
 
-OUT_OF_SYNC_STATUSES = {"outofsync"}
+# Only this exact conf_status triggers a retrieve. "unknown" (device never
+# checked in / FMG can't tell) and any other value are deliberately left
+# alone - retrieving them would be guessing, not reacting to a real desync.
+OUT_OF_SYNC_STATUS = "outofsync"
+IN_SYNC_STATUS = "insync"
+
+STATUS_LABELS = {
+    "outofsync": "DESYNC",
+    "insync": "SYNC",
+    "unknown": "INCONNU",
+}
 
 
 class FmgApiError(Exception):
@@ -179,17 +195,55 @@ class FmgClient:
 
 
 def wait_for_task(client, task_id, poll_interval, timeout, log):
+    """Poll a task until it finishes. Returns (state, ok, reason)."""
     deadline = time.time() + timeout
+    task = {}
     while time.time() < deadline:
         task = client.get_task(task_id)
         state = task.get("state")
         percent = task.get("percent", 0)
         log.info("  task %s: state=%s percent=%s%%", task_id, state, percent)
         if state in ("done", "error", "cancelled", "aborted"):
-            return state
+            break
         time.sleep(poll_interval)
-    log.warning("  task %s: timed out after %ss", task_id, timeout)
-    return "timeout"
+    else:
+        log.warning("  task %s: timed out after %ss", task_id, timeout)
+        return "timeout", False, f"pas terminé après {timeout}s"
+
+    lines = task.get("line") or []
+    err = lines[0].get("err") if lines else task.get("num_err", 0)
+    detail = lines[0].get("detail") if lines else task.get("detail")
+    ok = task.get("state") == "done" and not err
+    if ok:
+        return task.get("state"), True, detail or "OK"
+    reason = detail or f"état={task.get('state')} err={err}"
+    return task.get("state"), False, reason
+
+
+REPORT_COLUMNS = [
+    ("NAME", "name"),
+    ("SN", "sn"),
+    ("IP", "ip"),
+    ("STATUT", "status_label"),
+    ("ACTION", "action"),
+    ("HEURE", "triggered_at"),
+    ("RESULTAT", "result"),
+    ("RAISON", "reason"),
+]
+
+
+def log_report_table(rows, log):
+    widths = {}
+    for header, key in REPORT_COLUMNS:
+        widths[key] = max([len(header)] + [len(str(r.get(key, ""))) for r in rows])
+
+    def fmt_row(values):
+        return " | ".join(str(v).ljust(widths[key]) for v, (_, key) in zip(values, REPORT_COLUMNS))
+
+    log.info(fmt_row([h for h, _ in REPORT_COLUMNS]))
+    log.info("-+-".join("-" * widths[key] for _, key in REPORT_COLUMNS))
+    for r in rows:
+        log.info(fmt_row([r.get(key, "") for _, key in REPORT_COLUMNS]))
 
 
 def read_password(args):
@@ -225,7 +279,10 @@ def build_arg_parser():
         "--dry-run", action="store_true", help="List out-of-sync devices only, trigger nothing"
     )
     p.add_argument(
-        "--wait", action="store_true", help="Poll each retrieve task until it finishes instead of firing-and-forgetting"
+        "--no-wait",
+        action="store_true",
+        help="Do not poll retrieve tasks until completion (fire-and-forget). "
+        "By default the script waits so the report can show success/failed + reason.",
     )
     p.add_argument("--poll-interval", type=int, default=DEFAULT_TASK_POLL_INTERVAL)
     p.add_argument("--task-timeout", type=int, default=DEFAULT_TASK_TIMEOUT)
@@ -286,46 +343,83 @@ def main():
 
         log.info("ADOM '%s': %d device(s) found", args.adom, len(devices))
 
-        if args.all:
-            targets = devices
-        else:
-            targets = [d for d in devices if d.get("conf_status") in OUT_OF_SYNC_STATUSES]
-
-        if not targets:
-            log.info("No out-of-sync devices detected in ADOM '%s'.", args.adom)
-            return 0
-
-        log.info("Devices selected for retrieve (%d):", len(targets))
-        for d in targets:
-            log.info(
-                "  name=%s sn=%s conf_status=%s db_status=%s conn_status=%s ip=%s",
-                d.get("name"), d.get("sn"), d.get("conf_status"),
-                d.get("db_status"), d.get("conn_status"), d.get("ip"),
+        rows = []
+        for d in devices:
+            conf_status = d.get("conf_status") or "unknown"
+            rows.append(
+                {
+                    "name": d.get("name"),
+                    "sn": d.get("sn"),
+                    "ip": d.get("ip") or "-",
+                    "conf_status": conf_status,
+                    "status_label": STATUS_LABELS.get(conf_status, f"AUTRE({conf_status})"),
+                    "action": "-",
+                    "triggered_at": "-",
+                    "result": "-",
+                    "reason": "-",
+                }
             )
 
+        if args.all:
+            target_rows = rows
+            for r in target_rows:
+                if r["conf_status"] != OUT_OF_SYNC_STATUS:
+                    r["reason"] = "forcé par --all"
+        else:
+            target_rows = [r for r in rows if r["conf_status"] == OUT_OF_SYNC_STATUS]
+            for r in rows:
+                if r["conf_status"] != OUT_OF_SYNC_STATUS:
+                    r["action"] = "skipped"
+                    r["reason"] = f"conf_status={r['conf_status']} (pas de retrieve)"
+
+        if not target_rows:
+            log.info("No out-of-sync devices detected in ADOM '%s'.", args.adom)
+            log_report_table(rows, log)
+            return 0
+
         if args.dry_run:
+            for r in target_rows:
+                r["action"] = "would-retrieve (dry-run)"
+            log_report_table(rows, log)
             log.info("Dry-run: no retrieve triggered.")
             return 0
 
-        for d in targets:
-            name = d.get("name")
+        for r in target_rows:
+            name = r["name"]
+            r["action"] = "retrieved"
+            r["triggered_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             try:
-                task_id = client.retrieve_config(args.adom, name)
+                task_id = r["task_id"] = client.retrieve_config(args.adom, name)
             except FmgApiError as exc:
+                r["result"] = "FAILED"
+                r["reason"] = str(exc)
                 log.error("retrieve failed to start for %s: %s", name, exc)
                 exit_code = 1
                 continue
 
-            log.info(">> retrieve triggered for %s (task=%s)", name, task_id)
+            log.info(">> retrieve triggered for %s at %s (task=%s)", name, r["triggered_at"], task_id)
 
-            if args.wait and task_id:
-                state = wait_for_task(client, task_id, args.poll_interval, args.task_timeout, log)
-                if state != "done":
-                    log.error("retrieve for %s ended with state=%s", name, state)
-                    exit_code = 1
-                else:
-                    log.info("retrieve for %s completed successfully", name)
+            if args.no_wait:
+                r["result"] = "PENDING"
+                r["reason"] = f"task {task_id} lancée, suivi non attendu (--no-wait)"
+                continue
 
+            if not task_id:
+                r["result"] = "FAILED"
+                r["reason"] = "aucun task_id retourné par l'API"
+                exit_code = 1
+                continue
+
+            _, ok, reason = wait_for_task(client, task_id, args.poll_interval, args.task_timeout, log)
+            r["result"] = "SUCCESS" if ok else "FAILED"
+            r["reason"] = reason
+            if ok:
+                log.info("retrieve for %s completed successfully", name)
+            else:
+                log.error("retrieve for %s failed: %s", name, reason)
+                exit_code = 1
+
+        log_report_table(rows, log)
         return exit_code
     finally:
         client.logout()
