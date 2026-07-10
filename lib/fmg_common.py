@@ -429,7 +429,9 @@ def run_scan(
                 emit("retrieve_result", row=r)
                 continue
 
-            task_id = retrieve_data.get("task")
+            # Different FortiManager builds have been observed using either
+            # key for the task id in the /dvm/cmd/update/device response.
+            task_id = retrieve_data.get("task") or retrieve_data.get("taskid")
 
             if no_wait:
                 r["result"] = "PENDING"
