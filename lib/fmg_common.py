@@ -186,16 +186,24 @@ class FmgClient:
         return result.get("data", [])
 
     def retrieve_config(self, adom, device_name):
-        """Returns the raw "data" dict from /dvm/cmd/update/device (normally
-        {"task": <id>, ...}). Returning the whole dict, not just the task id,
-        lets the caller report exactly what FortiManager sent back if the
-        expected "task" key is missing - instead of a bare "no task id"."""
+        """Triggers an actual "Retrieve Config" (device -> FortiManager),
+        i.e. the API equivalent of the GUI's "Retrieve Config" button /
+        "diagnose test deploymanager reloadconf". /dvm/cmd/update/device
+        looked plausible from generic docs but only refreshes device
+        info/status without pulling the running config - the task would
+        report success while conf_status stayed outofsync. The documented,
+        verified endpoint for the real operation is /dvm/cmd/reload/dev-list.
+
+        Returns the raw "data" dict (normally {"task": <id>, ...} or
+        {"taskid": <id>, ...}); returning the whole dict lets the caller
+        report exactly what FortiManager sent back if the task id is
+        missing, instead of a bare "no task id"."""
         result = self._call(
             "exec",
-            "/dvm/cmd/update/device",
+            "/dvm/cmd/reload/dev-list",
             data={
                 "adom": adom,
-                "device": device_name,
+                "reload-dev-member-list": [{"name": device_name}],
                 "flags": ["create_task", "nonblocking"],
             },
         )
