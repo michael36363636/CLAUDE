@@ -214,6 +214,14 @@ class FmgClient:
         return result.get("data", {})
 
 
+# FortiManager task states seen in the wild that mean "the task stopped
+# progressing, go read the result" - "warning" (task finished but with a
+# non-fatal note) is a real one, observed getting stuck in an infinite poll
+# loop before this was added (it's not in the small set of states most API
+# examples document, but a live FMG instance definitely returned it).
+TERMINAL_TASK_STATES = ("done", "error", "cancelled", "aborted", "warning")
+
+
 def wait_for_task(client, task_id, poll_interval, timeout, on_poll=None):
     """Poll a task until it finishes. Returns (state, ok, reason)."""
     deadline = time.time() + timeout
@@ -224,7 +232,9 @@ def wait_for_task(client, task_id, poll_interval, timeout, on_poll=None):
         percent = task.get("percent", 0)
         if on_poll:
             on_poll(state, percent)
-        if state in ("done", "error", "cancelled", "aborted"):
+        # Also bail out at 100% regardless of the state label, as a safety
+        # net against any other not-yet-seen terminal state string.
+        if state in TERMINAL_TASK_STATES or percent >= 100:
             break
         time.sleep(poll_interval)
     else:
@@ -233,11 +243,15 @@ def wait_for_task(client, task_id, poll_interval, timeout, on_poll=None):
     lines = task.get("line") or []
     err = lines[0].get("err") if lines else task.get("num_err", 0)
     detail = lines[0].get("detail") if lines else task.get("detail")
-    ok = task.get("state") == "done" and not err
+    state = task.get("state")
+    # err (0 = success) is FortiManager's own authoritative signal for this
+    # device's line, independent of the overall task state label.
+    ok = not err
     if ok:
-        return task.get("state"), True, detail or "OK"
-    reason = detail or f"état={task.get('state')} err={err}"
-    return task.get("state"), False, reason
+        suffix = f" (état={state})" if state != "done" else ""
+        return state, True, (detail or "OK") + suffix
+    reason = detail or f"état={state} err={err}"
+    return state, False, reason
 
 
 def make_run_log_path(log_dir, when=None, trigger=None):
