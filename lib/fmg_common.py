@@ -94,10 +94,6 @@ class FmgClient:
         payload = {
             "id": self._next_id(),
             "method": method,
-            # Without "verbose", FortiManager returns enum fields like
-            # conf_status/conn_status as raw integers instead of the
-            # documented strings ("insync"/"outofsync"/"unknown"/"up"/"down").
-            "verbose": 1,
             "params": [
                 {
                     "url": url,
@@ -106,6 +102,14 @@ class FmgClient:
                 }
             ],
         }
+        if method == "get":
+            # Without "verbose", FortiManager returns enum fields like
+            # conf_status/conn_status as raw integers instead of the
+            # documented strings ("insync"/"outofsync"/"unknown"/"up"/"down").
+            # Only relevant for reads - deliberately not sent on "exec"
+            # (login/retrieve/logout) calls, which don't have enum fields to
+            # translate and shouldn't have their behavior altered by it.
+            payload["verbose"] = 1
         if use_session and self.session:
             payload["session"] = self.session
 
@@ -182,6 +186,10 @@ class FmgClient:
         return result.get("data", [])
 
     def retrieve_config(self, adom, device_name):
+        """Returns the raw "data" dict from /dvm/cmd/update/device (normally
+        {"task": <id>, ...}). Returning the whole dict, not just the task id,
+        lets the caller report exactly what FortiManager sent back if the
+        expected "task" key is missing - instead of a bare "no task id"."""
         result = self._call(
             "exec",
             "/dvm/cmd/update/device",
@@ -191,8 +199,7 @@ class FmgClient:
                 "flags": ["create_task", "nonblocking"],
             },
         )
-        data = result.get("data", {})
-        return data.get("task")
+        return result.get("data", {})
 
     def get_task(self, task_id):
         result = self._call("get", f"/task/task/{task_id}")
@@ -414,13 +421,15 @@ def run_scan(
             r["triggered_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             emit("retrieve_start", row=r)
             try:
-                task_id = client.retrieve_config(adom, name)
+                retrieve_data = client.retrieve_config(adom, name)
             except FmgApiError as exc:
                 r["result"] = "FAILED"
                 r["reason"] = str(exc)
                 exit_code = 1
                 emit("retrieve_result", row=r)
                 continue
+
+            task_id = retrieve_data.get("task")
 
             if no_wait:
                 r["result"] = "PENDING"
@@ -430,7 +439,7 @@ def run_scan(
 
             if not task_id:
                 r["result"] = "FAILED"
-                r["reason"] = "aucun task_id retourné par l'API"
+                r["reason"] = f"aucun task_id retourné par l'API (réponse: {retrieve_data})"
                 exit_code = 1
                 emit("retrieve_result", row=r)
                 continue
