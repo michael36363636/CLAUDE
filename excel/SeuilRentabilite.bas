@@ -85,7 +85,7 @@ Public Sub GenererCourbesRentabilite()
     Const L0 As Long = 6
     ws.Cells(L0 - 1, 1).Value = "Montant total (lignes = clients premium, colonnes = clients simple)"
     ws.Cells(L0 - 1, 1).Font.Bold = True
-    ws.Cells(L0, 1).Value = "Premium \ Simple"
+    ' A6 reste vide : Excel prend alors ligne 6 / colonne A comme étiquettes
     For j = 0 To maxSimple
         ws.Cells(L0, 2 + j).Value = j
     Next j
@@ -165,8 +165,9 @@ Private Sub CreerSurface3D(ws As Worksheet, grille As Range, seuil As Double, ga
     co.Name = "Surface3D"
     Set ch = co.Chart
 
-    ch.ChartType = xlSurface
+    ' Données d'abord : Excel refuse le type Surface sur un graphique vide
     ch.SetSourceData Source:=grille, PlotBy:=xlRows   ' séries = clients premium
+    ch.ChartType = xlSurface
 
     ch.HasTitle = True
     ch.ChartTitle.Text = "Montant annuel selon le nb de clients simple / premium" & vbLf & _
@@ -224,7 +225,6 @@ Private Sub CreerFrontiere(ws As Worksheet, L1 As Long, maxSimple As Long, gauch
     Set co = ws.ChartObjects.Add(Left:=gauche, Top:=ws.Range("A1").Top + 470, Width:=720, Height:=400)
     co.Name = "Frontiere"
     Set ch = co.Chart
-    ch.ChartType = xlXYScatterLines
 
     Do While ch.SeriesCollection.Count > 0
         ch.SeriesCollection(1).Delete
